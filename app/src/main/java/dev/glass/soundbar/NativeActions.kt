@@ -285,7 +285,7 @@ internal object NativeActions {
                     }
                     Reflect.call(target, "rescheduleTimeoutH")
                     Reflect.call(controller, "getState")
-                }.onFailure { android.util.Log.e("GlassSoundbar", "Native action failed", it) }
+                }.onFailure { ModuleDebugLog.e("GlassSoundbar", "Native action failed", it) }
             }
         }
         result.earphoneModes = EarphoneModes(context) { state ->
@@ -473,7 +473,7 @@ internal object NativeActions {
             }
         }
     }.getOrElse {
-        android.util.Log.w("GlassSoundbar", "QS Lottie icon unavailable; using ImageView", it)
+        ModuleDebugLog.w("GlassSoundbar", "QS Lottie icon unavailable; using ImageView", it)
         ImageView(context)
     }
 
@@ -481,7 +481,7 @@ internal object NativeActions {
         val context = action.icon.context
         val id = context.resources.getIdentifier(resource, "drawable", "com.android.systemui")
         if (id == 0) {
-            android.util.Log.w("GlassSoundbar", "Missing SystemUI drawable: $resource")
+            ModuleDebugLog.w("GlassSoundbar", "Missing SystemUI drawable: $resource")
             return
         }
         runCatching { Reflect.call(action.icon, "cancelAnimation") }
@@ -537,7 +537,7 @@ internal object NativeActions {
         android.util.Log.i("GlassSoundbar", "Playing native QS Lottie: $asset")
         true
     }.onFailure {
-        android.util.Log.e("GlassSoundbar", "Native QS Lottie failed: $asset", it)
+        ModuleDebugLog.e("GlassSoundbar", "Native QS Lottie failed: $asset", it)
     }.getOrDefault(false)
 
     fun extendTouchableRegion(container: View, internalInsetsInfo: Any) {

@@ -15,19 +15,30 @@
 - 外框四角使用同一原生模糊半径，与首列滑块按内边距同心对齐；再次显示单条时恢复原生参数。
 - 0.2.2 在展开首帧前同步计算最终圆角与边距，不再在动画结束后延迟修改。
 - 0.2.3 默认使用 12dp 外框内边距，宽高按原生内容计算；设置入口紧接音量区域，取消按屏幕百分比预留高度。
-- 0.3.1 延续当前原生单条音量条旁的按钮布局、材质和收起动画，提供响铃模式、勿扰模式及耳机模式切换。
+- 0.3.2 延续当前原生单条音量条旁的按钮布局、材质和收起动画，提供响铃模式、勿扰模式及耳机模式切换。
   耳机按钮直接切换系统支持的降噪、自适应、通透（支持时也包含关闭），不再打开蓝牙设置。
   AirPods 使用“我的设备”同款 `OplusBluetoothDevice` 能力位和状态接口，其他适配耳机使用
   SystemUI `EarphoneController` 同款 Melody Provider；未连接、无控制能力或无法读取状态时隐藏入口。
-  图标复用系统三种人像模式图标，状态以设备回读为准，所有查询在后台进行。
+  图标复用系统三种人像模式图标并使用中性色。切换时立即显示待确认目标、忽略旧缓存回报，
+  连续两次读回目标后确认；所有查询和设备调用在后台进行。
+- 设置页“导出调试日志”会分享 SystemUI 中与音量模块有关的状态、错误与堆栈；应用私有日志自动滚动，
+  上限 512 KiB，分享只读授权不暴露其他应用日志。
 - 不添加模拟的音量定时或断开连接功能。
 - 不创建悬浮窗、不抓取屏幕、不自绘音量滑块、不在模块中实现音量定时任务。
 - 横屏使用系统展开布局。关闭开关后恢复系统布局，下次按音量键生效。
+
+## LSPosed 状态
+
+设置页通过官方 libxposed Service 读取管理器返回的模块作用域。作用域包含 `com.android.systemui` 时显示已启用；管理器连接可用但未包含 SystemUI 时显示未选中；管理器服务不可用时显示无法读取。此状态不再依据 SystemUI 心跳推断。
 
 ## 构建
 
 使用 Android Studio JBR 21：`gradlew.bat :app:assembleDebug :app:lintDebug`。
 产物：`app/build/outputs/apk/debug/app-debug.apk`。
+发布版使用本机 `signing.properties` 和个人签名密钥，执行
+`gradlew.bat :app:assembleRelease :app:lintRelease`，产物：`app/build/outputs/apk/release/app-release.apk`。
+`signing.properties` 已加入忽略列表；发布时应安全备份 `%USERPROFILE%\.android\soundbar-release.jks`，
+同一密钥用于给已分发版本签名更新。
 
 LSPosed 作用域：`com.android.systemui`。安装更新后须重启系统界面。
 内部 ROM 类会随系统版本变更；此模块并非所有 Android ROM 通用。

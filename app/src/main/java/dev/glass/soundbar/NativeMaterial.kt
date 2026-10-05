@@ -85,7 +85,7 @@ internal object NativeMaterial {
             foregrounds[root] = ForegroundState(original, stroke)
             root.invalidate()
         }.onFailure {
-            android.util.Log.e("GlassSoundbar", "Failed to attach ColorOS17 edge stroke", it)
+            ModuleDebugLog.e("GlassSoundbar", "Failed to attach ColorOS17 edge stroke", it)
         }
     }
 

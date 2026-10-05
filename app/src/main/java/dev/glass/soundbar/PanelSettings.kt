@@ -7,9 +7,14 @@ import android.database.Cursor
 import android.database.MatrixCursor
 import android.net.Uri
 import android.os.Binder
-import android.os.Handler
-import android.os.Looper
-import android.os.SystemClock
+import android.os.Bundle
+import android.os.ParcelFileDescriptor
+import android.util.Log
+import io.github.libxposed.service.XposedService
+import io.github.libxposed.service.XposedServiceHelper
+import java.io.File
+import java.io.FileOutputStream
+import java.io.RandomAccessFile
 
 internal data class PanelSettings(val enabled: Boolean = true, val size: Float = 1f, val tint: Float = 0.22f) {
     companion object {
@@ -22,26 +27,24 @@ internal data class PanelSettings(val enabled: Boolean = true, val size: Float =
     }
 }
 
-internal object ActivationStatus {
-    val uri: Uri = Uri.parse("content://dev.glass.soundbar.settings/activation")
-    private const val HEARTBEAT_INTERVAL_MS = 30_000L
-    internal const val ACTIVE_TIMEOUT_MS = 75_000L
-    @Volatile private var heartbeatStarted = false
+internal object ActivationStatus : XposedServiceHelper.OnServiceListener {
+    @Volatile private var service: XposedService? = null
 
-    fun startHeartbeat(context: Context) {
-        val appContext = context.applicationContext ?: context
-        markActive(appContext)
-        if (heartbeatStarted) return
-        heartbeatStarted = true
-        val handler = Handler(Looper.getMainLooper())
-        val task = object : Runnable {
-            override fun run() {
-                markActive(appContext)
-                handler.postDelayed(this, HEARTBEAT_INTERVAL_MS)
-            }
-        }
-        handler.postDelayed(task, HEARTBEAT_INTERVAL_MS)
+    fun connectToManager() = XposedServiceHelper.registerListener(this)
+
+    override fun onServiceBind(service: XposedService) {
+        this.service = service
+        Log.i("GlassSoundbar", "LSPosed manager connected; SystemUI in scope=${service.scope.contains("com.android.systemui")}")
     }
+
+    override fun onServiceDied(service: XposedService) {
+        if (this.service === service) {
+            this.service = null
+            Log.w("GlassSoundbar", "LSPosed manager service disconnected")
+        }
+    }
+
+    fun isEnabledForSystemUi(): Boolean? = service?.scope?.contains("com.android.systemui")
 
     fun requestScopeRestart() {
         Thread {
@@ -60,24 +63,19 @@ internal object ActivationStatus {
         }.start()
     }
 
-    private fun markActive(context: Context) {
-        runCatching {
-            context.contentResolver.update(uri, ContentValues(), null, null)
-        }.onSuccess {
-            android.util.Log.i("GlassSoundbar", "LSPosed activation heartbeat updated")
-        }.onFailure {
-            android.util.Log.w("GlassSoundbar", "LSPosed activation heartbeat failed", it)
-        }
-    }
+}
 
-    fun isActive(context: Context): Boolean = runCatching {
-        context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-            cursor.moveToFirst() && cursor.getInt(0) != 0
-        } ?: false
-    }.getOrDefault(false)
+class SoundbarApplication : android.app.Application() {
+    override fun onCreate() {
+        super.onCreate()
+        ActivationStatus.connectToManager()
+    }
 }
 
 class SettingsProvider : ContentProvider() {
+    private val debugLock = Any()
+    private val debugFile: File get() = File(context!!.filesDir, "soundbar-debug.log")
+
     override fun onCreate() = true
 
     override fun query(
@@ -89,13 +87,6 @@ class SettingsProvider : ContentProvider() {
     ): Cursor {
         check(isOwnCaller() || isSystemUiCaller()) { "Only the module app or SystemUI can read settings" }
         return when (uri.lastPathSegment) {
-            "activation" -> {
-                val lastSeen = context!!.getSharedPreferences("activation", Context.MODE_PRIVATE)
-                    .getLong("last_seen_elapsed", -1L)
-                val now = SystemClock.elapsedRealtime()
-                val active = lastSeen >= 0L && now >= lastSeen && now - lastSeen <= ActivationStatus.ACTIVE_TIMEOUT_MS
-                MatrixCursor(arrayOf("active")).apply { addRow(arrayOf(if (active) 1 else 0)) }
-            }
             else -> {
                 val p = context!!.getSharedPreferences("panel", Context.MODE_PRIVATE)
                 MatrixCursor(arrayOf("enabled", "size", "tint")).apply {
@@ -106,17 +97,36 @@ class SettingsProvider : ContentProvider() {
     }
 
     override fun update(uri: Uri, values: ContentValues?, selection: String?, args: Array<out String>?): Int {
-        return when (uri.lastPathSegment) {
-            "activation" -> {
-                check(isSystemUiCaller()) { "Only SystemUI can report module activation" }
-                context!!.getSharedPreferences("activation", Context.MODE_PRIVATE)
-                    .edit()
-                    .putLong("last_seen_elapsed", SystemClock.elapsedRealtime())
-                    .apply()
-                1
+        return 0
+    }
+
+    override fun call(method: String, arg: String?, extras: Bundle?): Bundle? {
+        check(isSystemUiCaller()) { "Only SystemUI can append module diagnostics" }
+        if (method != "append_debug_log") return null
+        val entry = extras?.getString("entry")?.takeLast(32 * 1024) ?: return null
+        synchronized(debugLock) {
+            if (debugFile.length() + entry.length * 3 > 512 * 1024) {
+                val file = RandomAccessFile(debugFile, "rw")
+                val keep = minOf(256 * 1024L, file.length())
+                file.seek(file.length() - keep)
+                val tail = ByteArray(keep.toInt())
+                file.readFully(tail)
+                val firstLine = tail.indexOf('\n'.code.toByte()) + 1
+                file.setLength(0)
+                file.write(tail, firstLine, tail.size - firstLine)
+                file.close()
             }
-            else -> 0
+            FileOutputStream(debugFile, true).bufferedWriter().use { it.append(entry) }
         }
+        return Bundle()
+    }
+
+    override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor {
+        check(mode == "r" && (isOwnCaller() || context!!.checkCallingUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION) == android.content.pm.PackageManager.PERMISSION_GRANTED)) {
+            "Debug log is read-only and requires an app or URI read grant"
+        }
+        if (!debugFile.exists()) debugFile.writeText("No SystemUI diagnostic events have been recorded yet.\n")
+        return ParcelFileDescriptor.open(debugFile, ParcelFileDescriptor.MODE_READ_ONLY)
     }
 
     private fun isOwnCaller(): Boolean = Binder.getCallingUid() == android.os.Process.myUid()
@@ -126,7 +136,7 @@ class SettingsProvider : ContentProvider() {
         return context!!.packageManager.getPackagesForUid(uid)?.contains("com.android.systemui") == true
     }
 
-    override fun getType(uri: Uri) = "vnd.android.cursor.item/vnd.glass.config"
+    override fun getType(uri: Uri) = if (uri.lastPathSegment == "debug-log") "text/plain" else "vnd.android.cursor.item/vnd.glass.config"
     override fun insert(uri: Uri, values: ContentValues?): Uri? = throw UnsupportedOperationException()
     override fun delete(uri: Uri, selection: String?, args: Array<out String>?) = 0
 }

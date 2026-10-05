@@ -13,3 +13,4 @@ evidence/OplusVolume*.java
 tools/*.class
 /nul
 /.playwright-cli/
+/signing.properties

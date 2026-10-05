@@ -132,7 +132,7 @@ internal class EarphoneModes(context: Context, private val changed: (State?) -> 
                         }
                         val rawMode = when (nextMode) { 5 -> 2; 10 -> 4; 2 -> 3; else -> 1 }
                         if (Reflect.call(native, "setExtendFeatureStatus", 4, rawMode) != true) {
-                            android.util.Log.w("GlassSoundbar", "Native AirPods mode request rejected")
+                            ModuleDebugLog.w("GlassSoundbar", "Native AirPods mode request rejected")
                             return@post
                         }
                     } else {
@@ -148,9 +148,9 @@ internal class EarphoneModes(context: Context, private val changed: (State?) -> 
                     candidate = null
                     // Immediate feedback is explicitly pending until readback settles.
                     publish(current.copy(mode = nextMode, pending = true), token)
-                    android.util.Log.i("GlassSoundbar", "Requested earphone mode $baseMode -> $nextMode")
+                    ModuleDebugLog.i("GlassSoundbar", "Requested earphone mode $baseMode -> $nextMode")
                 } catch (error: Exception) {
-                    android.util.Log.w("GlassSoundbar", "Earphone mode request failed", error)
+                    ModuleDebugLog.w("GlassSoundbar", "Earphone mode request failed", error)
                 } finally {
                     Binder.restoreCallingIdentity(identity)
                 }
@@ -204,8 +204,9 @@ internal class EarphoneModes(context: Context, private val changed: (State?) -> 
         if (now - candidateSince < 400) return
         confirmed = state
         candidate = null
-        // Keep the request guard through its short settling window so a delayed
-        // old cache value cannot undo an already confirmed transition.
+        // Two stable reads acknowledge the command; after this, physical headset
+        // button changes are followed immediately through the same state filter.
+        pendingAddress = null
         publish(state, token)
     }
 
@@ -213,7 +214,7 @@ internal class EarphoneModes(context: Context, private val changed: (State?) -> 
         main.post {
             if (!running || token != generation) return@post
             if (state != lastPublished) {
-                android.util.Log.i("GlassSoundbar", "Earphone capability: mode=${state?.mode}, supported=${state?.supported}")
+                ModuleDebugLog.i("GlassSoundbar", "Earphone capability: mode=${state?.mode}, supported=${state?.supported}")
                 lastPublished = state
             }
             changed(state)
@@ -278,13 +279,11 @@ internal class EarphoneModes(context: Context, private val changed: (State?) -> 
     // Runs in SystemUI, whose permission is checked below; the settings APK never uses Bluetooth.
     @android.annotation.SuppressLint("MissingPermission")
     private fun readAirpods(device: BluetoothDevice): State? = runCatching {
-        if (contextForToast.checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT) !=
-            android.content.pm.PackageManager.PERMISSION_GRANTED) return@runCatching null
         val native = oplusDevice(device)
         if (Reflect.call(native, "checkIsAirpodsDevice") != true) return@runCatching null
         val mask = Reflect.call(native, "getDeviceExtendFeatureMask") as Int
         // Capability bits from MyDevices AirpodsUtils.FeatureSupportInfo, not model names.
-        if (mask <= 0 || mask and 4 == 0) return@runCatching null
+        if (mask and 4 == 0) return@runCatching null
         val modes = buildList {
             add(5)
             if (mask and 8 != 0) add(10)
@@ -297,7 +296,7 @@ internal class EarphoneModes(context: Context, private val changed: (State?) -> 
         if (modes.size < 2 || mode !in modes) return@runCatching null
         State(device.name.orEmpty(), device.address, mode, modes, airpods = true)
     }.getOrElse {
-        android.util.Log.w("GlassSoundbar", "Native AirPods capability query failed", it)
+        ModuleDebugLog.w("GlassSoundbar", "Native AirPods capability query failed", it)
         null
     }
 }

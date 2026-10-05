@@ -197,7 +197,7 @@ internal object NativePanelLayout {
             collapsedCapsules[root] = Rect(rect)
             android.util.Log.i("GlassSoundbar", "Collapsed capsule anchor=$rect centerY=${rect.exactCenterY()}")
         }.onFailure {
-            android.util.Log.w("GlassSoundbar", "Unable to capture collapsed capsule", it)
+            ModuleDebugLog.w("GlassSoundbar", "Unable to capture collapsed capsule", it)
         }
     }
 

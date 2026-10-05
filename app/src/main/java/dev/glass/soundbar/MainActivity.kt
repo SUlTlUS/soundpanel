@@ -1,6 +1,9 @@
 package dev.glass.soundbar
 
+import android.content.ClipData
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.view.WindowInsetsController
 import androidx.activity.ComponentActivity
@@ -44,11 +47,11 @@ class MainActivity : ComponentActivity() {
 private fun ActivationPage(activity: MainActivity) {
     val context: Context = activity
     val dark = isSystemInDarkTheme()
-    var active by remember { mutableStateOf(ActivationStatus.isActive(context)) }
+    var active by remember { mutableStateOf(ActivationStatus.isEnabledForSystemUi()) }
 
     LaunchedEffect(Unit) {
         while (true) {
-            active = ActivationStatus.isActive(context)
+            active = ActivationStatus.isEnabledForSystemUi()
             delay(2_000L)
         }
     }
@@ -85,9 +88,29 @@ private fun ActivationPage(activity: MainActivity) {
                 Ios27PageHeader(title = "音量面板")
                 Ios27ListSection {
                     Ios27ListRow(
-                        title = "LSPosed",
-                        detail = if (active) "已激活" else "未激活",
+                        title = "LSPosed 音量模块",
+                        subtitle = "来自 LSPosed 管理器的模块作用域",
+                        detail = when (active) {
+                            true -> "已启用"
+                            false -> "SystemUI 未选中"
+                            null -> "无法读取"
+                        },
                         disclosure = false,
+                    )
+                    Ios27ListRow(
+                        title = "导出调试日志",
+                        subtitle = "包含模块运行状态与错误堆栈",
+                        detail = "分享",
+                        onClick = {
+                            val uri = Uri.withAppendedPath(PanelSettings.uri, "debug-log")
+                            val share = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                putExtra(Intent.EXTRA_STREAM, uri)
+                                clipData = ClipData.newRawUri("GlassSoundbar debug log", uri)
+                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            }
+                            activity.startActivity(Intent.createChooser(share, "分享调试日志"))
+                        },
                     )
                 }
             }
