@@ -1,0 +1,15 @@
+.gradle/
+.kotlin/
+**/build/
+local.properties
+.codegraph/
+evidence/*.apk
+evidence/*.db*
+evidence/*.jar
+evidence/*Helper.java
+evidence/OplusVolume*.java
+/evidence/*
+!/evidence/earphone-contract.md
+tools/*.class
+/nul
+/.playwright-cli/
