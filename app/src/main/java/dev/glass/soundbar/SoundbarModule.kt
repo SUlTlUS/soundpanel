@@ -9,11 +9,19 @@ import io.github.libxposed.api.XposedModuleInterface
 class SoundbarModule : XposedModule() {
     override fun onPackageReady(param: XposedModuleInterface.PackageReadyParam) {
         if (param.packageName != "com.android.systemui") return
+        runCatching { PanelSettings.connectRemote(getRemotePreferences("panel")) }
+            .onFailure { Log.e("GlassSoundbar", "LSPosed preferences unavailable; using persistent snapshot fallback", it) }
+        val profile = DeviceProfile.detect(param.classLoader)
         runCatching {
             val activityThread = Class.forName("android.app.ActivityThread")
             val systemUiContext = activityThread.getDeclaredMethod("currentApplication").invoke(null) as? Context
             systemUiContext?.let(ModuleDebugLog::initialize)
         }.onFailure { Log.w("GlassSoundbar", "Debug log startup deferred", it) }
+        log(Log.INFO, "GlassSoundbar", DeviceProfile.detectionSummary)
+        if (profile == null) {
+            ModuleDebugLog.w("GlassSoundbar", "Neither volume contract matched; keeping stock panel. ${DeviceProfile.detectionSummary}")
+            return
+        }
         try {
             val type = Class.forName("com.oplus.systemui.volume.OplusVolumeDialogImpl", false, param.classLoader)
             val dialogHooks = type.declaredMethods.filter { it.name == "showH" || it.name == "expandPanel" }
@@ -44,14 +52,27 @@ class SoundbarModule : XposedModule() {
                     if (method.name == "showH") runCatching {
                         val target = chain.thisObject!!
                         val view = native ?: Reflect.field(target, "mOplusVolumeDialogView")!!
-                        val enabled = PanelSettings.read(Reflect.field(target, "mContext") as Context).enabled
+                        val settings = PanelSettings.read(Reflect.field(target, "mContext") as Context)
                         val root = Reflect.field(view, "mDialogView") as android.view.ViewGroup
                         root.post {
-                            if (enabled && Reflect.field(target, "mExpanded") != true) NativeActions.showCollapsed(view)
+                            if (settings.enabled && Reflect.field(target, "mExpanded") != true) NativeActions.showCollapsed(view, settings)
                             else NativeActions.hide(view)
                         }
                     }.onFailure { ModuleDebugLog.e("GlassSoundbar", "Collapsed controls failed", it) }
                     result
+                }
+            }
+            // Both ROMs use this entry point exclusively for the two alert-slider
+            // instructions, either as an expanded-panel tip or a collapsed toast.
+            type.declaredMethods.filter {
+                it.name == "isNeedToShowToastUi" && it.parameterTypes.contentEquals(arrayOf(Int::class.javaPrimitiveType))
+            }.forEach { method ->
+                hook(method).intercept { chain ->
+                    val enabled = runCatching {
+                        PanelSettings.read(Reflect.field(chain.thisObject!!, "mContext") as Context).enabled
+                    }.onFailure { ModuleDebugLog.e("GlassSoundbar", "Alert-slider tip settings read failed", it) }
+                        .getOrDefault(false)
+                    if (enabled) null else chain.proceed()
                 }
             }
             type.declaredMethods.filter { it.name == "inRangeOfView" && it.parameterCount == 2 }.forEach { method ->
@@ -88,7 +109,11 @@ class SoundbarModule : XposedModule() {
                             val position = Reflect.call(animatorObject, "resolveHolderStaggerPosition", holder) as Int
                             val itemView = Reflect.field(holder, "itemView") as android.view.View
                             val rowWidth = itemView.width.takeIf { it > 0 } ?: itemView.layoutParams.width
-                            NativePanelLayout.targetRowTranslationPx(position, rowWidth, itemView.left)
+                            NativePanelLayout.targetRowTranslationPx(position, rowWidth, itemView.left)?.also { endX ->
+                                if (position == 0) NativePanelLayout.activeRoot?.let {
+                                    NativePanelMotion.trackLeadingRow(it, itemView, endX)
+                                }
+                            }
                         }.onFailure { ModuleDebugLog.e("GlassSoundbar", "Exact row placement failed", it) }.getOrNull()
                         target ?: chain.proceed()
                     }
@@ -98,7 +123,9 @@ class SoundbarModule : XposedModule() {
             adapter.declaredMethods.filter { it.name == "onBindViewHolder" && !it.isBridge }.forEach { method ->
                 hook(method).intercept { chain ->
                     val result = chain.proceed()
-                    runCatching { NativePanelLayout.normalizeRows() }.onFailure { ModuleDebugLog.e("GlassSoundbar", "Row alignment failed", it) }
+                    runCatching {
+                        NativePanelLayout.normalizeRows(Reflect.field(chain.getArg(0), "itemView") as android.view.View)
+                    }.onFailure { ModuleDebugLog.e("GlassSoundbar", "Row alignment failed", it) }
                     result
                 }
             }
@@ -120,6 +147,82 @@ class SoundbarModule : XposedModule() {
                 }
             }
             val view = Class.forName("com.oplus.systemui.volume.view.OplusVolumeDialogView", false, param.classLoader)
+            if (DeviceProfile.current == DeviceProfile.ONEPLUS_15) {
+                val platform = Class.forName("com.oplusos.systemui.common.blurability.platformblur.PlatformBlurDrawable", false, param.classLoader)
+                hook(platform.getDeclaredMethod("draw", android.graphics.Canvas::class.java)).intercept { chain ->
+                    NativeMaterial.beforePlatformDraw(chain.thisObject!!, chain.getArg(0) as android.graphics.Canvas)
+                    chain.proceed()
+                }
+                val button = Class.forName("com.oplus.systemui.volume.view.OplusVolumeSideAccessoryButton", false, param.classLoader)
+                // These icons keep QS animation colors and the active DND tint.
+                // Let the native control own touch/light, but only stock icons use its tint writer.
+                hook(button.getDeclaredMethod("refreshIconTintForPlatformBlur")).intercept { chain ->
+                    if (NativeActions.isAddedNativeButton(chain.thisObject)) null else chain.proceed()
+                }
+                view.declaredMethods.filter {
+                    it.name == "refreshVolumeSpotLightType" || it.name == "access\$refreshVolumeSpotLight" ||
+                        it.name == "access\$refreshVolumeBlurLight"
+                }.forEach { method ->
+                    hook(method).intercept { chain ->
+                        val result = chain.proceed()
+                        runCatching {
+                            val native = if (java.lang.reflect.Modifier.isStatic(method.modifiers)) chain.getArg(0) else chain.thisObject!!
+                            NativeActions.refreshButtonEffects(native)
+                        }.onFailure { ModuleDebugLog.e("GlassSoundbar", "Side accessory effects refresh failed", it) }
+                        result
+                    }
+                }
+                val writer = Class.forName("com.oplus.systemui.volume.utils.material.VolumeBlurConfigWriter", false, param.classLoader)
+                writer.declaredMethods.filter {
+                    it.name == "writePanelPlatform" || it.name == "writeBarPlatform" || it.name == "writeProgressPlatform"
+                }.forEach { method ->
+                    hook(method).intercept { chain ->
+                        val result = chain.proceed()
+                        runCatching { NativePanelLayout.restoreMaterialAfterNativeRefresh(chain.getArg(0)) }
+                            .onFailure { ModuleDebugLog.e("GlassSoundbar", "Panel material restore after native refresh failed", it) }
+                        result
+                    }
+                }
+                val slider = Class.forName("com.oplus.systemui.volume.OplusVolumeSeekBar", false, param.classLoader)
+                slider.declaredMethods.filter { it.name == "ensureProgressPlatformBlur" }.forEach { method ->
+                    hook(method).intercept { chain ->
+                        val result = chain.proceed()
+                        runCatching { NativeVolumeSurface.bindSlider(chain.thisObject as android.view.View) }
+                            .onFailure { ModuleDebugLog.e("GlassSoundbar", "Progress material binding failed", it) }
+                        result
+                    }
+                }
+            }
+            val blurDrawable = Class.forName("com.oplusos.systemui.common.blurability.drawable.AutoBlurDrawable", false, param.classLoader)
+            blurDrawable.declaredMethods.filter { it.name == "draw" && it.parameterCount == 1 }.forEach { method ->
+                hook(method).intercept { chain ->
+                    val background = chain.thisObject as android.graphics.drawable.Drawable
+                    runCatching { NativeVolumeSurface.beforeDraw(background) }
+                        .onFailure { ModuleDebugLog.e("GlassSoundbar", "Expanded surface draw sync failed", it) }
+                    NativePanelMotion.applyBackgroundBounds(background)
+                    NativeMaterial.drawBackground(background) { chain.proceed() }
+                }
+            }
+            view.declaredMethods.filter { it.name == "showOrHideAnimation" }.forEach { method ->
+                hook(method).intercept { chain ->
+                    val result = chain.proceed()
+                    runCatching {
+                        val native = chain.thisObject!!
+                        val root = Reflect.field(native, "mDialogView") as android.view.View
+                        if (PanelSettings.read(root.context).enabled) {
+                            if (chain.getArg(1) as Boolean) NativePanelMotion.show(root)
+                            else NativePanelMotion.hide(root, NativePanelLayout.collapsedPanelWidth())
+                        }
+                    }.onFailure { ModuleDebugLog.e("GlassSoundbar", "Panel morph failed", it) }
+                    result
+                }
+            }
+            view.declaredMethods.filter { it.name == "initDialog" }.forEach { method ->
+                hook(method).intercept { chain ->
+                    (Reflect.field(chain.thisObject!!, "mDialogView") as? android.view.View)?.let(NativePanelMotion::cancel)
+                    chain.proceed()
+                }
+            }
             val insetsListener = Class.forName(
                 "com.oplus.systemui.volume.view.OplusVolumeDialogView\$getSeekbarInternalInsetsListener\$1",
                 false,
@@ -148,7 +251,6 @@ class SoundbarModule : XposedModule() {
                     runCatching {
                         val native = chain.thisObject!!
                         NativeActions.setWindowTouchThrough(native, true)
-                        NativePanelLayout.detachMaterialEdge(native)
                         // Keep injected collapsed controls visible and mirror the
                         // ROM accessory animation until SystemUI finishes hide.
                         NativeActions.beginDismiss(native)
@@ -158,6 +260,11 @@ class SoundbarModule : XposedModule() {
             }
             view.declaredMethods.filter { it.name == "doAfterHide" }.forEach { method ->
                 hook(method).intercept { chain ->
+                    runCatching {
+                        val native = chain.thisObject!!
+                        (Reflect.field(native, "mDialogView") as? android.view.View)?.let(NativePanelMotion::cancel)
+                        NativePanelLayout.detachMaterialEdge(native)
+                    }.onFailure { ModuleDebugLog.e("GlassSoundbar", "Panel morph cleanup failed", it) }
                     val result = chain.proceed()
                     runCatching { NativeActions.hide(chain.thisObject!!) }
                         .onFailure { ModuleDebugLog.e("GlassSoundbar", "Dismiss final cleanup failed", it) }

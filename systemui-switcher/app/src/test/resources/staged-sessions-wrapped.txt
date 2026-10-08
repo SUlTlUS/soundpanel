@@ -1,0 +1,12 @@
+sessionId = 356517355; appPackageName = null; isStaged = true; isReady = false; isApplied = false; isFailed = true; erro
+rMsg = Reverting back to safe state. Marking 356517355 as failed. Reason for revert: Failed to install sessionId: 356517
+355 Error: Non-silent installation of confidential apps is not allowed;
+sessionId = 495866443; appPackageName = com.android.systemui; isStaged = true; isReady = true; isApplied = false; isFail
+ed = false; errorMsg = ;
+sessionId = 1072474316; appPackageName = com.android.systemui; isStaged = true; isReady = false; isApplied = false; isFa
+iled = true; errorMsg = Package: com.android.systemui in session: 1072474316 has been staged already by session: 4958664
+43;
+sessionId = 1614836550; appPackageName = null; isStaged = true; isReady = false; isApplied = true; isFailed = false; err
+orMsg = ;
+sessionId = 1761098382; appPackageName = null; isStaged = true; isReady = false; isApplied = true; isFailed = false; err
+orMsg = ;

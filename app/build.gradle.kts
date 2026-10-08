@@ -17,8 +17,8 @@ android {
         applicationId = "dev.glass.soundbar"
         minSdk = 33
         targetSdk = 36
-        versionCode = 9
-        versionName = "0.3.3"
+        versionCode = 51
+        versionName = "1.0.1"
     }
     signingConfigs {
         create("releaseDistribution") {
@@ -39,7 +39,7 @@ android {
             )
         }
     }
-    buildFeatures { compose = true }
+    buildFeatures { compose = true; buildConfig = true }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_21
         targetCompatibility = JavaVersion.VERSION_21
