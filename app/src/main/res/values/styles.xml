@@ -1,7 +1,12 @@
 <resources>
+    <color name="app_window_background">#F2F2F7</color>
     <style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans</item>
-        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:colorBackground">@color/app_window_background</item>
+        <item name="android:windowBackground">@color/app_window_background</item>
+        <item name="android:windowSplashScreenBackground">@color/app_window_background</item>
         <item name="android:colorAccent">#2985FF</item>
         <item name="android:windowActionModeOverlay">true</item>
     </style>

@@ -1,99 +1,101 @@
 package dev.glass.soundbar
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.BoxScope
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.material.Icon
-import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.path
-import androidx.compose.ui.semantics.heading
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import com.zeaze.tianyinwallpaper.backdrop.backdrops.rememberLayerBackdrop
 import com.zeaze.tianyinwallpaper.backdrop.backdrops.layerBackdrop
-import com.zeaze.tianyinwallpaper.catalog.components.LiquidButton
+import com.zeaze.tianyinwallpaper.backdrop.Backdrop
 import com.zeaze.tianyinwallpaper.ui.commom.ProgressiveBlurContent
 import dev.liquidglass.ios27.Ios27Tokens
+import dev.liquidglass.ios27.Ios27AndroidDesignBehavior
 import dev.liquidglass.ios27.LocalIos27PageColors
 
 /**
- * Business-content adapter for the framework's Compact Large Title (12740-24021).
- * Keeps its 54dp toolbar, 34/41sp title and 44dp trailing glass control; only the
- * source title and glyph are replaced. Recorder/chrome layering follows
- * ExampleRecordedResponsivePage + ExampleTopChrome + ExampleNavBar.
+ * Theme-style page chrome: the large title scrolls with content below a 54dp gap.
+ * The progressive top blur follows the current page's scroll position.
+ * Recorder and chrome remain independent sibling layers.
  */
 @Composable
 internal fun SettingsPageScaffold(
-    title: String,
+    scrollState: ScrollState,
     dark: Boolean,
     onRestart: () -> Unit,
+    selectedTabIndex: Int,
+    onTabSelected: (Int) -> Unit,
+    modalContent: @Composable (Backdrop) -> Unit,
     content: @Composable BoxScope.(topPadding: Dp) -> Unit,
 ) {
     val colors = LocalIos27PageColors.current
     val backdrop = rememberLayerBackdrop { drawRect(colors.page); drawContent() }
-    val topInset = WindowInsets.safeDrawing.asPaddingValues().calculateTopPadding()
-    Box(
+    val systemDensity = LocalDensity.current
+    val topInsetPx = with(systemDensity) {
+        WindowInsets.safeDrawing.asPaddingValues().calculateTopPadding().toPx()
+    }
+    BoxWithConstraints(
         Modifier.fillMaxSize().background(colors.page)
             .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom)),
     ) {
-        Box(Modifier.fillMaxSize().background(colors.page).layerBackdrop(backdrop)) {
-            content(topInset + Ios27Tokens.CompactHeaderHeight.dp)
-        }
-        // Sibling overlays stay outside the recorder to avoid sampling themselves.
-        ProgressiveBlurContent(
-            modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth(),
-            backdrop = backdrop,
-            isLightTheme = !dark,
-        )
-        Box(
-            Modifier.align(Alignment.TopCenter).widthIn(max = Ios27Tokens.ReadableWidth.dp)
-                .fillMaxWidth().padding(top = topInset)
-                .height(Ios27Tokens.CompactHeaderHeight.dp)
-                .padding(horizontal = Ios27Tokens.ContentMargin.dp),
-        ) {
-            Text(
-                title,
-                modifier = Modifier.align(Alignment.TopStart).fillMaxWidth()
-                    .padding(end = 52.dp).semantics { heading() },
-                color = colors.label,
-                style = Ios27Tokens.Type.LargeTitle.copy(fontWeight = FontWeight.Bold),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            LiquidButton(
-                onClick = onRestart,
-                backdrop = backdrop,
-                modifier = Modifier.align(Alignment.TopEnd).size(44.dp),
-                buttonHeight = 44.dp,
-                contentPadding = PaddingValues(0.dp),
-            ) {
-                Icon(RestartIcon, contentDescription = "重启作用域", tint = colors.label, modifier = Modifier.size(22.dp))
+        // Compute from system dp before entering the scaled page density.
+        val native = LocalSettingsAppearance.current.native != null
+        val scale = if (native) 1f else (minOf(maxWidth.value, maxHeight.value) / 402f).coerceIn(0.85f, 1f)
+        val pageDensity = Density(systemDensity.density * scale, systemDensity.fontScale)
+        Ios27AndroidDesignBehavior(pageDensity) {
+            val topInset = with(pageDensity) { topInsetPx.toDp() }
+            Box(Modifier.fillMaxSize()) {
+                if (native) Box(Modifier.fillMaxSize().layerBackdrop(backdrop).background(colors.page))
+                val source = if (native) Modifier else Modifier.layerBackdrop(backdrop)
+                Box(Modifier.fillMaxSize().background(colors.page).then(source)) {
+                    content(topInset + Ios27Tokens.CompactHeaderHeight.dp)
+                }
+                // Sibling overlays stay outside the recorder to avoid sampling themselves.
+                ProgressiveBlurContent(
+                    modifier = Modifier.align(Alignment.TopCenter).fillMaxWidth(),
+                    backdrop = backdrop,
+                    isLightTheme = !dark,
+                    strength = 1f,
+                    visibility = (scrollState.value / with(pageDensity) { 30.dp.toPx() }).coerceIn(0f, 1f),
+                    surfaceColor = colors.page,
+                    // The title scrolls with content; only the safe inset is fixed.
+                    appBarHeight = topInset,
+                    scrollDriven = true,
+                )
+                SettingsTabBar(
+                    selectedTabIndex = selectedTabIndex,
+                    onTabSelected = onTabSelected,
+                    onRestart = onRestart,
+                    backdrop = backdrop,
+                    isLightTheme = !dark,
+                    // COUI's 88dp host already centers the 56dp bar with 16dp below it.
+                    modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = if (native) 0.dp else 16.dp),
+                )
+                modalContent(backdrop)
             }
         }
     }
 }
 
-private val RestartIcon = ImageVector.Builder(
+internal val RestartIcon = ImageVector.Builder(
     name = "RestartScope", defaultWidth = 24.dp, defaultHeight = 24.dp,
     viewportWidth = 24f, viewportHeight = 24f,
 ).apply {

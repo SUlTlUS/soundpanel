@@ -9,6 +9,7 @@ import android.view.View
 import android.view.ViewTreeObserver
 import android.view.animation.PathInterpolator
 import java.util.IdentityHashMap
+import java.util.WeakHashMap
 
 /** Animate the bounds of the existing ROM material, never scale its contents. */
 internal object NativePanelMotion {
@@ -27,8 +28,13 @@ internal object NativePanelMotion {
     private val rowTracks = IdentityHashMap<View, RowTrack>()
     private val trackingRoots = IdentityHashMap<View, Boolean>()
     private val pendingShows = IdentityHashMap<View, Pair<ViewTreeObserver, ViewTreeObserver.OnPreDrawListener>>()
+    private val leftSides = WeakHashMap<View, Boolean>()
     private val enterCurve = PathInterpolator(0.2f, 0f, 0.2f, 1f)
     private val exitCurve = PathInterpolator(0.4f, 0f, 1f, 1f)
+
+    fun setSide(root: View, leftSide: Boolean) { leftSides[root] = leftSide }
+
+    fun isLeftSide(root: View): Boolean = leftSides[root] == true
 
     fun prepareExpand(root: View) {
         rowTracks.remove(root)
@@ -74,21 +80,28 @@ internal object NativePanelMotion {
         var clockEnded = false
         var boundsApplied = false
         var opacityFailed = false
-        motion.bounds.set(PanelMorphGeometry.left(root.width, startWidth, toWidth, 0f), 0, root.width, root.height)
+        val leftSide = isLeftSide(root)
+        fun setBounds(inset: Int) {
+            motion.bounds.set(if (leftSide) 0 else inset, 0, if (leftSide) root.width - inset else root.width, root.height)
+        }
+        setBounds(PanelMorphGeometry.left(root.width, startWidth, toWidth, 0f))
         fun applyFrame() {
             val track = if (capsuleWidth != null) rowTracks[root] else null
             val desiredLeft = if (track != null) {
                 if (!entering && (!track.view.isAttachedToWindow || track.view.alpha <= 0.01f)) {
                     PanelMorphGeometry.left(root.width, startWidth, toWidth, 1f)
                 } else {
-                    PanelMorphGeometry.followedLeft(root.width, capsuleWidth!!, track.view.translationX, track.settledTranslation)
+                    val direction = if (leftSide) -1f else 1f
+                    PanelMorphGeometry.followedLeft(root.width, capsuleWidth!!,
+                        track.view.translationX * direction, track.settledTranslation * direction)
                 }
             } else PanelMorphGeometry.left(root.width, startWidth, toWidth, progress)
-            val left = PanelMorphGeometry.advanceLeft(motion.bounds.left, desiredLeft, entering)
-            val changed = !boundsApplied || motion.bounds.left != left ||
-                motion.bounds.right != root.width || motion.bounds.bottom != root.height
+            val currentInset = if (leftSide) root.width - motion.bounds.right else motion.bounds.left
+            val inset = PanelMorphGeometry.advanceLeft(currentInset, desiredLeft, entering)
+            val changed = !boundsApplied || currentInset != inset ||
+                motion.bounds.width() != root.width - inset || motion.bounds.bottom != root.height
             if (changed) {
-                motion.bounds.set(left, 0, root.width, root.height)
+                setBounds(inset)
                 root.clipBounds = motion.bounds
                 NativeMaterial.setMotionBounds(root, motion.bounds)
                 boundsApplied = true
@@ -109,7 +122,7 @@ internal object NativePanelMotion {
         }
         motion.listener = ViewTreeObserver.OnPreDrawListener {
             applyFrame()
-            if (entering && (motion.bounds.left == 0 ||
+            if (entering && (motion.bounds.width() == root.width ||
                     (clockEnded && (capsuleWidth == null || rowTracks[root] == null)))) {
                 cancel(root, keepTrack = true)
             }
@@ -143,7 +156,7 @@ internal object NativePanelMotion {
             })
             start()
         }
-        ModuleDebugLog.i("GlassSoundbar", "Panel morph: entering=$entering width=$startWidth->$toWidth source=${if (capsuleWidth != null) "native-row" else "clock"} fallbackDuration=$duration right=${root.right}")
+        ModuleDebugLog.d("GlassSoundbar", "Panel morph: entering=$entering width=$startWidth->$toWidth source=${if (capsuleWidth != null) "native-row" else "clock"} fallbackDuration=$duration side=${if (leftSide) "left" else "right"}")
     }
 
     /** View.draw may reset a resized background's bounds after pre-draw. */

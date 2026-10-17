@@ -90,7 +90,7 @@ class NativePanelSurfaceTest {
         NativePanelSurface(config).setPreset(baseline, 0f, panel = true)
         val bar = Config().apply { platformBlurDrawableFullOpacity = true }
         NativePanelSurface(bar).setPreset(baseline, 0f, panel = false)
-        assertEquals(0x803F5E7D.toInt(), config.blurColor)
+        assertEquals(0x8A3A5774.toInt(), config.blurColor)
         assertEquals(baseline.radius, config.blurRadius)
         assertSame(baseline.motionMix, config.motionBlurMixConfig)
         assertEquals(baseline, NativeSurfacePreset.capture(bar))
@@ -139,7 +139,7 @@ class NativePanelSurfaceTest {
         NativePanelSurface(panel).setPreset(collapsed, 0f, panel = true)
         NativePanelSurface(bar).setPreset(collapsed, 0f, panel = false)
         val panelMix = panel.platformMixConfig as NativePanelToneTest.BlurMixMultiWithShader
-        assertEquals(NativePanelToneTest.MixColorWithShader(3, 0x553F5E7D, 5, 0x332F4E6D), panelMix.foregroundShaderParam)
+        assertEquals(NativePanelToneTest.MixColorWithShader(3, 0x6336516C, 5, 0x43243B53), panelMix.foregroundShaderParam)
         assertEquals(mix.backgroundShaderParam, panelMix.backgroundShaderParam)
         assertTrue(panelMix.alphaWithBlurAmount)
         assertFalse(mix.alphaWithBlurAmount)
@@ -157,7 +157,7 @@ class NativePanelSurfaceTest {
         val bar = Config()
         NativePanelSurface(panel).setPreset(preset, 0.5f, panel = true)
         NativePanelSurface(bar).setPreset(preset, 0.5f, panel = false)
-        assertEquals(0x8057728D.toInt(), panel.blurColor)
+        assertEquals(0x8A536C85.toInt(), panel.blurColor)
         assertEquals(source.blurColor, bar.blurColor)
         val panelMix = (panel.platformMixConfig as NativePanelToneTest.BlurMixSingleWithShader).backgroundShaderParam
         val barMix = (bar.platformMixConfig as NativePanelToneTest.BlurMixSingleWithShader).backgroundShaderParam
@@ -165,9 +165,9 @@ class NativePanelSurfaceTest {
         assertEquals(0x55335577, barMix.bottomLayerColor)
         assertEquals(barMix.topMode, panelMix.topMode)
         assertEquals(barMix.bottomMode, panelMix.bottomMode)
-        assertEquals(barMix.topLayerColor ushr 24, panelMix.topLayerColor ushr 24)
-        assertEquals(0x336F869E, NativeSurfacePreset.panelColor(0x33446688, 1f))
-        assertEquals(0x332F475E, NativeSurfacePreset.panelColor(0x33446688, -1f))
+        assertTrue((panelMix.topLayerColor ushr 24) > (barMix.topLayerColor ushr 24))
+        assertEquals(0x43637587, NativeSurfacePreset.panelColor(0x33446688, 1f))
+        assertEquals(0x72151F2A, NativeSurfacePreset.panelColor(0x33446688, -1f))
         assertEquals(0x80446688.toInt(), source.blurColor)
         listOf(-1f, 1f).forEach { amount ->
             NativePanelSurface(bar).setPreset(preset, amount, panel = false)

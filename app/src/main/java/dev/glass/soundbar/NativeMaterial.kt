@@ -31,7 +31,7 @@ internal object NativeMaterial {
         var originalBackground: Drawable?, var panelBackground: PanelBackgroundDrawable?,
     )
     private val foregrounds = WeakHashMap<View, ForegroundState>()
-    private class StrokeFade(val proxy: Any, val config: Any, val platformStroke: NativePanelStroke?) {
+    private class StrokeFade(val proxy: Any, val config: Any, val platformStroke: NativePanelStroke?, val highlightEnabled: Boolean) {
         var amount = 1f
         val shaderModes = IdentityHashMap<Any, Boolean>()
         var renderStatus: String? = null
@@ -76,7 +76,7 @@ internal object NativeMaterial {
         override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
     }
     // Both paths use the ROM renderer and native stroke parameters.
-    fun apply(proxy: Any, root: View, radius: Float) {
+    fun apply(proxy: Any, root: View, radius: Float, highlightEnabled: Boolean = true) {
         resetMotionOpacity(root)
         val config = Reflect.call(proxy, "getBlurConfig")!!
         if (DeviceProfile.current == DeviceProfile.ONEPLUS_15) {
@@ -97,20 +97,22 @@ internal object NativeMaterial {
             val lightType = Class.forName("com.oplusos.systemui.common.util.GradientStrokeLineAdapter", false, proxy.javaClass.classLoader)
             val light = lightType.getField("INSTANCE").get(null)!!
             // Keep QS button lighting; the collapsed volume background supplies depth/color.
-            val template = Reflect.call(light, "getQSPluginBlurLightConfig", night, true)!!
+            val template = Reflect.call(light, "getQSPluginBlurLightConfig", night, highlightEnabled)
             Reflect.call(light, "adaptStrokeLineParams", config, template)
             Reflect.call(light, "adaptStrokeCornerParams", config, radius, null, true)
-            ModuleDebugLog.i("GlassSoundbar", "Panel uses native QS button light: night=$night stroke=${Reflect.call(config, "getGradientStrokeLineParam")}")
+            ModuleDebugLog.i("GlassSoundbar", "Panel uses native QS button light: night=$night panelLight=$highlightEnabled stroke=${Reflect.call(config, "getGradientStrokeLineParam")}")
         }
         if (DeviceProfile.current?.usesLegacyEdgeStroke == true) {
             applyEdgeStroke(root, radius, proxy.javaClass.classLoader)
         }
         val previous = strokeFades[root]
         strokeFades[root] = StrokeFade(proxy, config, if (DeviceProfile.current == DeviceProfile.ONEPLUS_15) {
-            NativePanelStroke(config)
-        } else null).also {
+            NativePanelStroke(config, highlightEnabled)
+        } else null, highlightEnabled).also {
             if (previous?.proxy === proxy) it.shaderModes.putAll(previous.shaderModes)
+            if (!highlightEnabled) it.platformStroke?.restore(1f)
         }
+        foregrounds[root]?.stroke?.alpha = if (highlightEnabled) 255 else 0
         ModuleDebugLog.i(
             "GlassSoundbar",
             "Native panel material preserved: profile=${DeviceProfile.current} blur=${Reflect.call(config, "getBlurRadius")}"
@@ -180,7 +182,7 @@ internal object NativeMaterial {
         val fade = strokeFades[root] ?: return
         val amount = (Reflect.call(fade.proxy, "getBlurAmount") as Float).coerceIn(0f, 1f)
         if (fade.amount == amount) return
-        foregrounds[root]?.stroke?.alpha = (amount * 255f).roundToInt()
+        foregrounds[root]?.stroke?.alpha = if (fade.highlightEnabled) (amount * 255f).roundToInt() else 0
         foregrounds[root]?.tint?.alpha = (amount * 255f).roundToInt()
         fade.platformStroke?.let {
             it.restore(amount)
@@ -192,7 +194,7 @@ internal object NativeMaterial {
     fun resetMotionOpacity(root: View) {
         val fade = strokeFades[root] ?: return
         if (fade.amount == 1f) return
-        foregrounds[root]?.stroke?.alpha = 255
+        foregrounds[root]?.stroke?.alpha = if (fade.highlightEnabled) 255 else 0
         foregrounds[root]?.tint?.alpha = 255
         fade.platformStroke?.let {
             it.restore(1f)
@@ -229,7 +231,7 @@ internal object NativeMaterial {
             val renderer = Reflect.call(actual, "getBlurDrawable")!!
             if (!fade.shaderModes.containsKey(renderer)) {
                 val shader = Reflect.call(renderer, "getDrawableShader")!!
-                ModuleDebugLog.i("GlassSoundbar", "Native panel stroke before direct setup: renderer=${renderer.javaClass.name} shader=${Reflect.call(renderer, "getEnableShader")} stroke=${Reflect.call(shader, "getGradientStrokeLineParams")} corner=${Reflect.call(shader, "getCornerParams")} configured=${Reflect.call(fade.config, "getGradientStrokeLineParam")}")
+                ModuleDebugLog.v("GlassSoundbar", "Native panel stroke before direct setup: renderer=${renderer.javaClass.name} shader=${Reflect.call(renderer, "getEnableShader")} stroke=${Reflect.call(shader, "getGradientStrokeLineParams")} corner=${Reflect.call(shader, "getCornerParams")} configured=${Reflect.call(fade.config, "getGradientStrokeLineParam")}")
             }
             fade.shaderModes.getOrPut(renderer) { Reflect.call(renderer, "getEnableShader") as Boolean }
             val amount = (Reflect.call(fade.proxy, "getBlurAmount") as Float).coerceIn(0f, 1f)
@@ -240,7 +242,7 @@ internal object NativeMaterial {
             if (fade.renderStatus != status) {
                 fade.renderStatus = status
                 val shader = Reflect.call(renderer, "getDrawableShader")!!
-                ModuleDebugLog.i("GlassSoundbar", "Native panel stroke draw: stage=$stage hardware=${canvas.isHardwareAccelerated} amount=$amount bounds=${(actual as Drawable).bounds} shader=${Reflect.call(renderer, "getEnableShader")} valid=${Reflect.call(shader, "getShaderOrNull") != null} alpha=${Reflect.call(renderer, "getPaintAlpha")} stroke=${Reflect.call(shader, "getGradientStrokeLineParams")} corner=${Reflect.call(shader, "getCornerParams")}")
+                ModuleDebugLog.v("GlassSoundbar", "Native panel stroke draw: stage=$stage hardware=${canvas.isHardwareAccelerated} amount=$amount bounds=${(actual as Drawable).bounds} shader=${Reflect.call(renderer, "getEnableShader")} valid=${Reflect.call(shader, "getShaderOrNull") != null} alpha=${Reflect.call(renderer, "getPaintAlpha")} stroke=${Reflect.call(shader, "getGradientStrokeLineParams")} corner=${Reflect.call(shader, "getCornerParams")}")
             }
         }.onFailure {
             fade.renderFailed = true

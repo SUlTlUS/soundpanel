@@ -38,16 +38,18 @@ class NativePanelToneTest {
         assertEquals(0x33FFFFFF, light.placeHolderColor)
         NativePanelTone.apply(config, -1f)
         val dark = config.platformMixConfig as BlurMixMultiWithShader
-        assertEquals(0x19000000, dark.foregroundShaderParam.topLayerColor)
-        assertEquals(0x66000000, dark.backgroundShaderParam.bottomLayerColor)
+        assertEquals(0xFF000000.toInt(), dark.foregroundShaderParam.topLayerColor)
+        assertEquals(0xFF000000.toInt(), dark.backgroundShaderParam.bottomLayerColor)
         NativePanelTone.restore(config)
         assertSame(original, config.platformMixConfig)
     }
 
-    @Test fun endpointsKeepNativeTransparency() {
+    @Test fun darkeningIncreasesOpacityButPreservesFullyTransparentColors() {
         assertEquals(0x80FFFFFF.toInt(), NativePanelTone.adjustColor(0x806688AA.toInt(), 1f))
-        assertEquals(0x80000000.toInt(), NativePanelTone.adjustColor(0x806688AA.toInt(), -1f))
+        assertEquals(0xA03D5266.toInt(), NativePanelTone.adjustColor(0x806688AA.toInt(), -0.25f))
+        assertEquals(0xFF000000.toInt(), NativePanelTone.adjustColor(0x806688AA.toInt(), -1f))
         assertEquals(0x006688AA, NativePanelTone.adjustColor(0x006688AA, 1f))
+        assertEquals(0x006688AA, NativePanelTone.adjustColor(0x006688AA, -1f))
         assertEquals(0x806688AA.toInt(), NativePanelTone.adjustColor(0x806688AA.toInt(), 0f))
     }
 
@@ -76,8 +78,8 @@ class NativePanelToneTest {
         val adjusted = config.platformMixConfig as BlurMixSingleWithShader
         assertEquals(5, adjusted.backgroundShaderParam.topMode)
         assertEquals(2, adjusted.backgroundShaderParam.bottomMode)
-        assertEquals(0x80000000.toInt(), adjusted.backgroundShaderParam.topLayerColor)
-        assertEquals(0x55000000, adjusted.backgroundShaderParam.bottomLayerColor)
+        assertEquals(0xFF000000.toInt(), adjusted.backgroundShaderParam.topLayerColor)
+        assertEquals(0xFF000000.toInt(), adjusted.backgroundShaderParam.bottomLayerColor)
         assertEquals(original.alphaWithBlurAmount, adjusted.alphaWithBlurAmount)
         assertEquals(original.mirrorScale, adjusted.mirrorScale, 0f)
         NativePanelTone.apply(config, 0f)
@@ -97,7 +99,7 @@ class NativePanelToneTest {
         assertEquals(0x66FFFFFF, adjustedShader.backgroundShaderParam.bottomLayerColor)
         assertEquals(0x80FFFFFF.toInt(), adjustedMotion.mixColor.topLayerColor)
         NativePanelTone.apply(config, -1f)
-        assertEquals(0x66000000, (config.platformMixConfig as RuntimeShaderMix).backgroundShaderParam.bottomLayerColor)
+        assertEquals(0xFF000000.toInt(), (config.platformMixConfig as RuntimeShaderMix).backgroundShaderParam.bottomLayerColor)
         NativePanelTone.restore(config)
         assertSame(shader, config.platformMixConfig)
         assertSame(motion, config.motionBlurMixConfig)

@@ -17,8 +17,8 @@ android {
         applicationId = "dev.glass.soundbar"
         minSdk = 33
         targetSdk = 36
-        versionCode = 51
-        versionName = "1.0.1"
+        versionCode = 85
+        versionName = "1.2.3"
     }
     signingConfigs {
         create("releaseDistribution") {
@@ -50,6 +50,7 @@ tasks.withType<KotlinCompile>().configureEach {
 }
 dependencies {
     implementation(project(":liquidglass"))
+    implementation("androidx.compose.material:material-icons-core:1.7.8")
     implementation("androidx.activity:activity-compose:1.13.0")
     implementation("io.github.libxposed:service:102.0.0")
     compileOnly("io.github.libxposed:api:102.0.0")

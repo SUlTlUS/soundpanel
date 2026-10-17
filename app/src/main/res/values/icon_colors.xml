@@ -1,0 +1,5 @@
+<resources>
+    <color name="ic_launcher_background">#2985FF</color>
+    <color name="ic_launcher_track">#55FFFFFF</color>
+    <color name="ic_launcher_fill">#FFFFFF</color>
+</resources>

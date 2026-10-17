@@ -14,12 +14,27 @@ import java.util.IdentityHashMap
 internal object NativePanelLayout {
     private var activePaddingPx = 0f
     private var activeSliderWidthPx = 0f
+    private var activeLeftSide = false
+    private var activeRowCount = 0
 
-    fun targetRowTranslationPx(position: Int, rowWidth: Int, naturalRowLeft: Int): Float? {
-        if (activeRoot == null || activePaddingPx <= 0f || activeSliderWidthPx <= 0f || rowWidth <= 0) return null
+    fun isLeadingRow(position: Int): Boolean = position == if (activeLeftSide) activeRowCount - 1 else 0
+
+    fun targetRowTranslationPx(position: Int, row: View): Float? {
+        val root = activeRoot ?: return null
+        val rowWidth = row.width.takeIf { it > 0 } ?: row.layoutParams.width
+        if (activePaddingPx <= 0f || activeSliderWidthPx <= 0f || rowWidth <= 0) return null
+        // A holder's left is relative to its RecyclerView, not the panel.
+        var naturalRowLeft = row.left.toFloat()
+        var parent = row.parent as? View
+        while (parent != null && parent !== root) {
+            naturalRowLeft += parent.left + parent.translationX - parent.scrollX
+            parent = parent.parent as? View
+        }
+        if (parent !== root) return null
+        naturalRowLeft -= root.scrollX
         val sideInset = (rowWidth - activeSliderWidthPx).coerceAtLeast(0f) / 2f
         val desiredRowLeft = activePaddingPx - sideInset + position * (activeSliderWidthPx + activePaddingPx)
-        return desiredRowLeft - naturalRowLeft.toFloat()
+        return desiredRowLeft - naturalRowLeft
     }
     private val originals = WeakHashMap<View, ViewGroup.LayoutParams>()
     private val biases = WeakHashMap<View, Float>()
@@ -30,9 +45,14 @@ internal object NativePanelLayout {
     private val paddingScales = WeakHashMap<View, Float>()
     private val toneAmounts = WeakHashMap<View, Float>()
     private val radiusScales = WeakHashMap<View, Float>()
+    private val borderHighlights = WeakHashMap<View, Boolean>()
     private data class LabelState(val height: Int, val visibility: Int, val minimumHeight: Int)
     private val labelStates = WeakHashMap<TextView, LabelState>()
     private val recyclerHeights = WeakHashMap<View, Int>()
+    private data class RecyclerHorizontalState(
+        val width: Int, val left: Int, val right: Int, val start: Int, val end: Int,
+    )
+    private val recyclerHorizontalStates = WeakHashMap<View, RecyclerHorizontalState>()
     private val hiddenLabels = WeakHashMap<View, Boolean>()
     private var labelExtentPx = 0
     var activeNative: Any? = null
@@ -58,6 +78,7 @@ internal object NativePanelLayout {
             return
         }
         val tone = settings.toneFor(root.context)
+        NativePanelPosition.apply(native, settings)
         captureCollapsedCapsule(native, root, tone)
         NativeActions.hide(native)
         val original = root.layoutParams
@@ -70,8 +91,10 @@ internal object NativePanelLayout {
         paddingScales[root] = settings.size
         toneAmounts[root] = tone
         radiusScales[root] = settings.radiusScale
+        borderHighlights[root] = settings.borderHighlight
+        activeLeftSide = NativePanelMotion.isLeftSide(root)
         hiddenLabels[root] = settings.hideLabels
-        ModuleDebugLog.i("GlassSoundbar", "Panel settings read: tone=$tone uiMode=${root.resources.configuration.uiMode} lightTone=${settings.tone} darkTone=${settings.darkTone} radiusScale=${settings.radiusScale} profile=${DeviceProfile.current}")
+        ModuleDebugLog.d("GlassSoundbar", "Panel settings read: tone=$tone uiMode=${root.resources.configuration.uiMode} lightTone=${settings.tone} darkTone=${settings.darkTone} radiusScale=${settings.radiusScale} profile=${DeviceProfile.current}")
         activeRoot = root
         activeNative = native
         NativePanelMotion.prepareExpand(root)
@@ -88,6 +111,7 @@ internal object NativePanelLayout {
         paddingScales.remove(root)
         toneAmounts.remove(root)
         radiusScales.remove(root)
+        borderHighlights.remove(root)
         NativeVolumeSurface.restore()
         hiddenLabels.remove(root)
         labelStates.forEach { (label, state) ->
@@ -103,6 +127,15 @@ internal object NativePanelLayout {
         NativeMaterial.detachEdgeStroke(root)
         val recycler = Reflect.field(native, "mVolumeRecyclerview") as? View
         if (recycler != null) {
+            recyclerHorizontalStates.remove(recycler)?.let { state ->
+                val lp = recycler.layoutParams as ViewGroup.MarginLayoutParams
+                lp.width = state.width
+                lp.leftMargin = state.left
+                lp.rightMargin = state.right
+                lp.marginStart = state.start
+                lp.marginEnd = state.end
+                recycler.layoutParams = lp
+            }
             recyclerHeights.remove(recycler)?.let { height ->
                 recycler.layoutParams = recycler.layoutParams.apply { this.height = height }
             }
@@ -130,6 +163,7 @@ internal object NativePanelLayout {
         activeNative = null
         activePaddingPx = 0f
         activeSliderWidthPx = 0f
+        activeRowCount = 0
     }
 
     private fun material(native: Any): Any? {
@@ -210,13 +244,34 @@ internal object NativePanelLayout {
         val finalLp = FrameLayout.LayoutParams(currentLp).apply {
             width = panelWidth
             height = panelHeight
-            gravity = Gravity.TOP or Gravity.RIGHT
-            topMargin = (anchor.exactCenterY() - parentTop - expandedSliderCenterLocal).toInt().coerceAtLeast(0)
-            rightMargin = (parent.width - desiredRight).coerceAtLeast(0)
+            gravity = Gravity.TOP or (if (activeLeftSide) Gravity.LEFT else Gravity.RIGHT)
+            topMargin = (anchor.exactCenterY() - parentTop - root.translationY - expandedSliderCenterLocal).toInt().coerceAtLeast(0)
+            if (activeLeftSide) {
+                leftMargin = (anchor.left - parentLeft - padding).toInt().coerceAtLeast(0)
+                rightMargin = 0
+            } else {
+                rightMargin = (parent.width - desiredRight).coerceAtLeast(0)
+                leftMargin = 0
+            }
         }
 
         activePaddingPx = padding
         activeSliderWidthPx = sliderWidth.toFloat()
+        activeRowCount = rows.size
+        // Tablet ROMs keep a 360dp list with an outside margin. Once the panel
+        // shrinks, that list overflows left and leaves the last slider's touch
+        // region outside its parent. Resize the expanded list with the panel.
+        val recyclerLp = recycler.layoutParams as ViewGroup.MarginLayoutParams
+        recyclerHorizontalStates.getOrPut(recycler) {
+            RecyclerHorizontalState(recyclerLp.width, recyclerLp.leftMargin, recyclerLp.rightMargin,
+                recyclerLp.marginStart, recyclerLp.marginEnd)
+        }
+        recyclerLp.width = panelWidth
+        recyclerLp.leftMargin = 0
+        recyclerLp.rightMargin = 0
+        recyclerLp.marginStart = 0
+        recyclerLp.marginEnd = 0
+        recycler.layoutParams = recyclerLp
         recycler.translationY = recyclerTranslationY
         root.layoutParams = finalLp
         val radiusId = row.resources.getIdentifier("volume_vertical_row_radius_os17", "dimen", "com.android.systemui")
@@ -240,7 +295,7 @@ internal object NativePanelLayout {
                 val config = Reflect.call(proxy, "getBlurConfig")!!
                 radii.getOrPut(config) { CornerState(corners.map { Reflect.call(config, "get$it") as Float }, radius) }
                     .radius = radius
-                runCatching { NativeMaterial.apply(proxy, root, radius) }.onFailure {
+                runCatching { NativeMaterial.apply(proxy, root, radius, borderHighlights[root] != false) }.onFailure {
                     ModuleDebugLog.w("GlassSoundbar", "Panel stroke setup failed; applying tone independently", it)
                 }
                 val amount = toneAmounts[root] ?: 0f
@@ -324,7 +379,9 @@ internal object NativePanelLayout {
         val parent = root.parent as? View ?: return false
         val parentLocation = IntArray(2)
         parent.getLocationOnScreen(parentLocation)
-        val desiredTopMargin = PanelContentGeometry.topMargin(anchor.top, padding, parentLocation[1])
+        val desiredTopMargin = PanelContentGeometry.topMargin(
+            (anchor.top - root.translationY).toInt(), padding, parentLocation[1],
+        )
         val rootDelta = desiredTopMargin - lp.topMargin
         // Calibrate settled layout, not an intermediate row pose. Landscape
         // moves can animate vertically while pre-draw calibration is running.
@@ -478,16 +535,17 @@ internal object NativePanelLayout {
         val margins = (lp as? ViewGroup.MarginLayoutParams)?.let {
             " margins=${it.leftMargin}/${it.topMargin}/${it.rightMargin}/${it.bottomMargin}"
         } ?: ""
-        ModuleDebugLog.i(
+        ModuleDebugLog.v(
             "GlassSoundbar",
             "$label class=${view.javaClass.name} screen=${rectOnScreen(view)} size=${view.width}x${view.height} measured=${view.measuredWidth}x${view.measuredHeight} lp=${lp?.width}x${lp?.height}$margins pad=${view.paddingLeft}/${view.paddingTop}/${view.paddingRight}/${view.paddingBottom} trans=${view.translationX},${view.translationY} scale=${view.scaleX},${view.scaleY} alpha=${view.alpha} visibility=${view.visibility}"
         )
     }
 
     private fun logGeometrySnapshot(native: Any, root: ViewGroup, stage: String, rows: List<*>) {
+        if (!ModuleDebugLog.accepts(android.util.Log.VERBOSE)) return
         runCatching {
             val recycler = Reflect.field(native, "mVolumeRecyclerview") as? View ?: return@runCatching
-            ModuleDebugLog.i(
+            ModuleDebugLog.v(
                 "GlassSoundbar",
                 "Geometry snapshot[$stage] ${deviceSummary(root)} resources={padding=${dimenPx(root, "volume_dialog_recycleview_padding_left")}, paddingLand=${dimenPx(root, "volume_dialog_recycleview_padding_left_land")}, recyclerH=${dimenPx(root, "volume_vertical_recyclerview_height")}, radius=${dimenPx(root, "volume_vertical_row_radius_os17")}, seekWidth=${dimenPx(root, "volume_vertical_seek_bar_width")}, seekHeight=${dimenPx(root, "volume_vertical_seek_bar_height")}, elevTop=${dimenPx(root, "oplus_volume_elevation_padding_top")}, elevBottom=${dimenPx(root, "oplus_volume_elevation_padding_bottom")}}"
             )
@@ -503,7 +561,7 @@ internal object NativePanelLayout {
                 if (frame != null) logView("$stage-frame[$index]", frame)
                 if (slider != null) {
                     logView("$stage-slider[$index]", slider)
-                    ModuleDebugLog.i("GlassSoundbar", "$stage-capsule[$index]=${visualCapsuleOnScreen(slider)}")
+                    ModuleDebugLog.v("GlassSoundbar", "$stage-capsule[$index]=${visualCapsuleOnScreen(slider)}")
                 }
             }
         }.onFailure {

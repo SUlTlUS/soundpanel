@@ -24,52 +24,101 @@ class NativePanelStrokeTest {
         }
     }
 
-    class Renderer {
-        var shaderEnabled = false
+    // The ROM exposes material state on a nested shader, not on the renderer.
+    class Shader {
         var stroke: NativeStrokeOpacityTest.Stroke? = null
         var corner: Corner? = null
         var optics: String? = null
         var shadow: String? = null
+        fun getGradientStrokeLineParams() = stroke
+        fun getCornerParams() = corner
+        fun getOpticsParams() = optics
+        fun getInnerShadowParams() = shadow
+    }
+
+    class Renderer {
+        val shader = Shader()
+        var shaderEnabled = false
         var paintOpacity = 0
+        fun getDrawableShader() = shader
+        fun getEnableShader() = shaderEnabled
+        fun getPaintAlpha() = paintOpacity
         fun setEnableBlurShader(enabled: Boolean) { shaderEnabled = enabled }
-        fun setOpticsParams(value: String?) { optics = value }
-        fun setInnerShadowParams(value: String?) { shadow = value }
+        fun setOpticsParams(value: String?) { shader.optics = value }
+        fun setInnerShadowParams(value: String?) { shader.shadow = value }
         fun setAlpha(value: Int) { paintOpacity = value }
         fun setGradientStrokeLineParams(value: NativeStrokeOpacityTest.Stroke?): Boolean {
-            val changed = stroke != value
-            stroke = value
+            val changed = shader.stroke != value
+            shader.stroke = value
             return changed
         }
         fun setCornerParams(value: Corner): Boolean {
-            val changed = corner != value
-            corner = value.copy()
+            val changed = shader.corner != value
+            shader.corner = value.copy()
             return changed
         }
     }
 
     @Test fun actualRendererReceivesNativeShaderStrokeAndCorners() {
         val config = Config()
+        val original = config.gradientStrokeLineParam
         val stroke = NativePanelStroke(config)
         val renderer = Renderer()
         config.nativePanelRefresh()
         stroke.applyTo(renderer, 1f)
         assertTrue(renderer.shaderEnabled)
-        assertSame(config.gradientStrokeLineParam, renderer.stroke)
-        assertEquals(Corner(), renderer.corner)
-        assertEquals("native-optics", renderer.optics)
-        assertEquals("native-shadow", renderer.shadow)
+        assertSame(original, renderer.shader.stroke)
+        assertEquals(Corner(), renderer.shader.corner)
+        assertEquals("native-optics", renderer.shader.optics)
+        assertEquals("native-shadow", renderer.shader.shadow)
         assertEquals(255, renderer.paintOpacity)
-        // Native setters return false when no update is needed; that is not failure.
+        // A later ROM refresh mutates the shared corner object again.
+        config.nativePanelRefresh()
         stroke.applyTo(renderer, 1f)
-        assertSame(config.gradientStrokeLineParam, renderer.stroke)
+        assertSame(original, renderer.shader.stroke)
+        assertEquals(Corner(), renderer.shader.corner)
+        assertEquals(255, renderer.paintOpacity)
+    }
+
+    @Test fun disabledPanelLightClearsCachedRendererAndSurvivesNativeRefresh() {
+        val config = Config().apply {
+            gradientStrokeLineParam = null
+            opticsParams = null
+            innerShadowParams = null
+        }
+        val stroke = NativePanelStroke(config, highlightEnabled = false)
+        val renderer = Renderer().apply {
+            shader.stroke = NativeStrokeOpacityTest.Stroke()
+            shader.optics = "cached-optics"
+            shader.shadow = "cached-shadow"
+        }
+        config.nativePanelRefresh()
+        stroke.restore(1f)
+        stroke.applyTo(renderer, 1f)
+        assertNull(config.gradientStrokeLineParam)
+        assertNull(config.opticsParams)
+        assertNull(config.innerShadowParams)
+        assertNull(renderer.shader.stroke)
+        assertNull(renderer.shader.optics)
+        assertNull(renderer.shader.shadow)
+        assertEquals(255, renderer.paintOpacity)
+        assertEquals(Corner(), renderer.shader.corner)
+        config.nativePanelRefresh()
+        stroke.restore(0.5f)
+        stroke.applyTo(renderer, 0.5f)
+        assertNull(renderer.shader.stroke)
+        assertNull(renderer.shader.optics)
+        assertNull(renderer.shader.shadow)
     }
 
     @Test fun actualRendererReceivesCurrentDismissOpacity() {
         val stroke = NativePanelStroke(Config())
         val renderer = Renderer()
         stroke.applyTo(renderer, 0.25f)
-        assertEquals(0.4f, renderer.stroke!!.strokeLineAlphaNear, 0f)
-        assertEquals(0.8f, renderer.stroke!!.strokeLineAlphaFar, 0f)
+        // The native renderer fades the entire light package via paint alpha;
+        // stroke colors remain native instead of being faded twice.
+        assertEquals(0.4f, renderer.shader.stroke!!.strokeLineAlphaNear, 0f)
+        assertEquals(0.8f, renderer.shader.stroke!!.strokeLineAlphaFar, 0f)
         assertEquals(63, renderer.paintOpacity)
         stroke.applyTo(renderer, 0f)
         assertEquals(0, renderer.paintOpacity)

@@ -13,6 +13,13 @@ import android.os.Looper
 import android.os.SystemClock
 import org.json.JSONArray
 
+internal enum class EarphoneMode(val code: Int, val bit: Int, val title: String) {
+    OFF(1, 1, "关闭"),
+    ANC(5, 2, "降噪"),
+    ADAPTIVE(10, 4, "自适应"),
+    TRANSPARENCY(2, 8, "通透");
+}
+
 /** Same provider contract as ColorOS EarphoneController/NoiseReductionDetailTile.
  * All IPC runs off the SystemUI main thread. Unknown capabilities fail closed.
  */
@@ -22,6 +29,13 @@ internal class EarphoneModes(context: Context, private val changed: (State?) -> 
         val airpods: Boolean = false, val pending: Boolean = false
     ) {
         val next: Int get() = supported[(supported.indexOf(mode) + 1) % supported.size]
+        fun next(selectedModes: Int): Int? {
+            val modes = supported.filter { code ->
+                EarphoneMode.entries.any { it.code == code && selectedModes and it.bit != 0 }
+            }
+            if (modes.isEmpty()) return null
+            return modes[(modes.indexOf(mode) + 1) % modes.size]
+        }
         val title: String get() = title(mode)
         val icon: String get() = when (mode) {
             5 -> "qs_detail_tile_noise_reduction_open"
@@ -40,6 +54,7 @@ internal class EarphoneModes(context: Context, private val changed: (State?) -> 
         // Exact order/values used by NoiseReductionDetailTile.getNextNoiseReductionMode.
         private val order = listOf(1, 5, 10, 2)
         fun title(mode: Int): String = when (mode) {
+            1 -> "关闭"
             5 -> "降噪"
             10 -> "自适应"
             2 -> "通透"
@@ -99,7 +114,7 @@ internal class EarphoneModes(context: Context, private val changed: (State?) -> 
         }
     }
 
-    fun cycle(displayed: State) {
+    fun cycle(displayed: State, selectedModes: Int) {
         val token = generation
         worker.post {
             if (!running || token != generation) return@post
@@ -110,7 +125,8 @@ internal class EarphoneModes(context: Context, private val changed: (State?) -> 
                 // vendor readback. Every tap still issues a real native command.
                 val baseMode = if (pendingAddress == current.address &&
                     SystemClock.uptimeMillis() - pendingSince < 2500) pendingMode else current.mode
-                val nextMode = current.supported[(current.supported.indexOf(baseMode) + 1) % current.supported.size]
+                val nextMode = current.copy(mode = baseMode).next(selectedModes) ?: return@post
+                if (nextMode == baseMode) return@post
                 val identity = Binder.clearCallingIdentity()
                 try {
                     if (current.airpods) {

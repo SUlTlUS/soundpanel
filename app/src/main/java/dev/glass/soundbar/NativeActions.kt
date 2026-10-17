@@ -11,6 +11,7 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewTreeObserver
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -42,7 +43,7 @@ internal object NativeActions {
         var lastMode = -1
         var lastZen = -1
         var dismissing = false
-        var visualSyncGeneration = 0
+        var visualSync: ViewTreeObserver.OnPreDrawListener? = null
         var settings = PanelSettings()
     }
 
@@ -50,6 +51,12 @@ internal object NativeActions {
     private val nativeButtons = WeakHashMap<View, Boolean>()
 
     fun isAddedNativeButton(view: Any?): Boolean = view is View && nativeButtons.containsKey(view)
+
+    fun materialHosts(native: Any, stock: List<View>): List<View> {
+        val container = Reflect.field(native, "mMoreRowStreamLl") as? ViewGroup ?: return stock
+        val item = controls[container] ?: return stock
+        return stock + item.actions.map { it.frame }
+    }
 
     fun refreshButtonEffects(native: Any) {
         if (DeviceProfile.current != DeviceProfile.ONEPLUS_15) return
@@ -67,7 +74,7 @@ internal object NativeActions {
             ?: return
         val flag = android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
         if (enabled) window.addFlags(flag) else window.clearFlags(flag)
-        android.util.Log.i(
+        ModuleDebugLog.v(
             "GlassSoundbar",
             "Volume window touch-through=${if (enabled) "ON" else "OFF"} flags=0x${window.attributes.flags.toString(16)}"
         )
@@ -81,9 +88,9 @@ internal object NativeActions {
         }
         val container = Reflect.field(native, "mMoreRowStreamLl") as? ViewGroup ?: return
         val item = controls.getOrPut(container) { create(native, container) }
+        val continuing = !item.dismissing && item.actions.any { it.frame.visibility != View.GONE }
         item.settings = settings
         item.dismissing = false
-        item.visualSyncGeneration++
         if (settings.headsetButton) item.earphoneModes?.start() else {
             item.earphoneModes?.stop()
             item.headset = null
@@ -92,30 +99,45 @@ internal object NativeActions {
         // siblings in its parent rail, so the stock More button keeps its own
         // ColorOS material/background/click handling intact.
         refresh(item)
-        item.actions.forEachIndexed { index, action ->
-            val visible = shouldShowAction(item, index)
-            action.frame.animate().cancel()
-            action.frame.alpha = 1f
-            action.frame.scaleX = 1f
-            action.frame.scaleY = 1f
-            action.frame.translationX = 0f
-            action.frame.translationY = 0f
-            action.frame.isClickable = visible
-            action.frame.isFocusable = visible
-            action.frame.isEnabled = visible
-            action.frame.visibility = if (visible) View.VISIBLE else View.GONE
+        if (continuing) {
+            applyStockVisualState(item)
+        } else {
+            item.actions.forEachIndexed { index, action ->
+                val visible = shouldShowAction(item, index)
+                action.frame.animate().cancel()
+                action.frame.alpha = 1f
+                action.frame.scaleX = 1f
+                action.frame.scaleY = 1f
+                action.frame.translationX = 0f
+                action.frame.translationY = 0f
+                action.frame.isClickable = visible
+                action.frame.isFocusable = visible
+                action.frame.isEnabled = visible
+                action.frame.visibility = if (visible) View.VISIBLE else View.GONE
+            }
         }
-        startStockVisualSync(item)
         if (DeviceProfile.current == DeviceProfile.ONEPLUS_15) {
             runCatching {
                 val helper = Reflect.field(native, "blurHostHelper")!!
                 val root = Reflect.field(native, "mDialogView") as View
-                item.actions.forEach { Reflect.call(helper, "assignSideAccessoryBackground", root, it.frame) }
+                item.actions.forEach { action ->
+                    if (!continuing || action.frame.background == null) {
+                        Reflect.call(helper, "assignSideAccessoryBackground", root, action.frame)
+                    }
+                }
                 refreshButtonEffects(native)
+                Reflect.call(helper, "scheduleSideAccessoryBlurCaptureRefresh")
             }.onFailure { ModuleDebugLog.e("GlassSoundbar", "Side accessory material binding failed", it) }
         }
+        applyStockVisualState(item)
+        startStockVisualSync(item)
+        if (continuing) {
+            ModuleDebugLog.i("GlassSoundbar", "Collapsed actions refreshed without remount")
+            return
+        }
         container.post {
-            android.util.Log.i(
+            if (!ModuleDebugLog.accepts(android.util.Log.VERBOSE)) return@post
+            ModuleDebugLog.v(
                 "GlassSoundbar",
                 "Collapsed rail: container=${container.width}x${container.height} children=${container.childCount} actions=${item.actions.size} " +
                     item.actions.joinToString { action ->
@@ -133,7 +155,7 @@ internal object NativeActions {
             it.earphoneModes?.stop()
             it.headset = null
             it.dismissing = false
-            it.visualSyncGeneration++
+            stopStockVisualSync(it)
         }?.actions?.forEach { action ->
             action.icon.animate().cancel()
             runCatching { Reflect.call(action.icon, "cancelAnimation") }
@@ -163,7 +185,7 @@ internal object NativeActions {
         val item = controls[container] ?: return
         item.dismissing = true
         item.earphoneModes?.stop()
-        item.visualSyncGeneration++
+        stopStockVisualSync(item)
         val appAdjust = Reflect.field(native, "mAppVolumeAdjustFl") as? View
         val reference = appAdjust?.takeIf { it.visibility == View.VISIBLE } ?: container
         val startedAt = android.os.SystemClock.uptimeMillis()
@@ -213,7 +235,7 @@ internal object NativeActions {
 
         mirrorFrame()
         forceTouchableRegionRefresh(native)
-        android.util.Log.i(
+        ModuleDebugLog.v(
             "GlassSoundbar",
             "Collapsed actions joined stock dismiss animation via ${reference.javaClass.simpleName}"
         )
@@ -318,7 +340,7 @@ internal object NativeActions {
                             Reflect.call(controller, "setZenMode", nextZen)
                             updateZen(result, nextZen)
                         }
-                        2 -> result.earphoneModes?.cycle(result.headset ?: return@setOnClickListener)
+                        2 -> result.earphoneModes?.cycle(result.headset ?: return@setOnClickListener, result.settings.headsetModes)
                     }
                     Reflect.call(target, "rescheduleTimeoutH")
                     Reflect.call(controller, "getState")
@@ -332,8 +354,9 @@ internal object NativeActions {
             if (state != null && state != previous) {
                 val action = result.actions[2]
                 update(action, state.title, state.icon, false, native)
+                val nextMode = state.next(result.settings.headsetModes)
                 action.icon.contentDescription = if (state.pending) "${state.title}，切换中" else
-                    "${state.title}，点按切换为${EarphoneModes.title(state.next)}"
+                    if (nextMode != null && nextMode != state.mode) "${state.title}，点按切换为${EarphoneModes.title(nextMode)}" else state.title
                 action.frame.contentDescription = action.icon.contentDescription
             }
             if (state != previous) {
@@ -349,6 +372,7 @@ internal object NativeActions {
     }
 
     private fun stockReference(item: Controls): View {
+        if (item.container.visibility == View.VISIBLE) return item.container
         val appAdjust = Reflect.field(item.native, "mAppVolumeAdjustFl") as? View
         return appAdjust?.takeIf { it.visibility == View.VISIBLE } ?: item.container
     }
@@ -397,17 +421,24 @@ internal object NativeActions {
     }
 
     private fun startStockVisualSync(item: Controls) {
-        val generation = item.visualSyncGeneration
-        fun frame() {
-            if (item.visualSyncGeneration != generation || item.dismissing) return
-            val target = runCatching { Reflect.field(item.native, "volumeInteractor") }.getOrNull() ?: return
-            if (runCatching { Reflect.field(target, "mExpanded") == true }.getOrDefault(false)) return
-            applyStockVisualState(item)
-            if (item.container.isAttachedToWindow) {
-                item.container.postOnAnimation { frame() }
+        stopStockVisualSync(item)
+        val target = Reflect.field(item.native, "volumeInteractor")!!
+        val listener = ViewTreeObserver.OnPreDrawListener {
+            if (item.dismissing || Reflect.field(target, "mExpanded") == true) {
+                stopStockVisualSync(item)
+            } else {
+                applyStockVisualState(item)
             }
+            true
         }
-        item.container.postOnAnimation { frame() }
+        item.visualSync = listener
+        item.container.viewTreeObserver.addOnPreDrawListener(listener)
+    }
+
+    private fun stopStockVisualSync(item: Controls) {
+        val listener = item.visualSync ?: return
+        item.container.viewTreeObserver.removeOnPreDrawListener(listener)
+        item.visualSync = null
     }
 
     private fun forceTouchableRegionRefresh(native: Any) {
@@ -433,6 +464,7 @@ internal object NativeActions {
             else -> item.settings.headsetButton
         }
         if (!enabled) return false
+        if (index == 2 && item.headset?.next(item.settings.headsetModes) == null) return false
         val landscape = item.container.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
         return if (landscape) {
             index == 2 && item.headset != null
@@ -544,7 +576,7 @@ internal object NativeActions {
             loader
         )
         (type.getConstructor(Context::class.java).newInstance(context) as ImageView).also { icon ->
-            android.util.Log.i("GlassSoundbar", "Using native QS icon view: ${icon.javaClass.name}")
+            ModuleDebugLog.v("GlassSoundbar", "Using native QS icon view: ${icon.javaClass.name}")
             runCatching {
                 val renderMode = Class.forName("com.airbnb.lottie.RenderMode", false, loader)
                 val software = renderMode.getField("SOFTWARE").get(null)
@@ -613,7 +645,7 @@ internal object NativeActions {
         Reflect.call(action.icon, "playAnimation")
         action.currentResource = finalResource
         action.currentTint = endTint
-        android.util.Log.i("GlassSoundbar", "Playing native QS Lottie: $asset")
+        ModuleDebugLog.v("GlassSoundbar", "Playing native QS Lottie: $asset")
         true
     }.onFailure {
         ModuleDebugLog.e("GlassSoundbar", "Native QS Lottie failed: $asset", it)
@@ -632,7 +664,7 @@ internal object NativeActions {
             }
         }
         if (added > 0) {
-            android.util.Log.i("GlassSoundbar", "Touchable region extended for $added collapsed actions")
+            ModuleDebugLog.v("GlassSoundbar", "Touchable region extended for $added collapsed actions")
         }
     }
 
