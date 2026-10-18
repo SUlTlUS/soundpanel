@@ -17,8 +17,8 @@ android {
         applicationId = "dev.glass.soundbar"
         minSdk = 33
         targetSdk = 36
-        versionCode = 85
-        versionName = "1.2.3"
+        versionCode = 86
+        versionName = "1.2.4"
     }
     signingConfigs {
         create("releaseDistribution") {

@@ -1,9 +1,24 @@
 package dev.glass.soundbar
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class PanelContentGeometryTest {
+    @Test fun unmeasuredCallRowDoesNotHideUsableMediaRowGeometry() {
+        val call = PanelContentGeometry.rowWidths(-1, 0, -1, 0)
+        val media = PanelContentGeometry.rowWidths(-1, 192, -1, 156)
+        assertNull(call)
+        assertEquals(PanelContentGeometry.RowWidths(192, 156), listOfNotNull(call, media).firstOrNull())
+    }
+
+    @Test fun explicitNativeWidthsDoNotRequireAPreviousCallLayout() {
+        assertEquals(PanelContentGeometry.RowWidths(192, 156), PanelContentGeometry.rowWidths(192, 0, 156, 0))
+        assertNull(PanelContentGeometry.rowWidths(0, 0, 156, 156))
+        assertNull(PanelContentGeometry.rowWidths(192, 192, 0, 0))
+        assertNull(PanelContentGeometry.rowWidths(120, 120, 156, 156))
+    }
+
     @Test fun landscapeTopClampHasAStableLayoutTarget() {
         assertEquals(0, PanelContentGeometry.topMargin(18, 28f, 0))
         assertEquals(0, PanelContentGeometry.topMargin(32, 28f, 12))

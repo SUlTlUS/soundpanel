@@ -210,7 +210,7 @@ private fun ActivationPage(activity: MainActivity) {
                         AppearanceSection(settings, ::saveSettings)
                         VolumeIconColorSection(settings, onReset = {
                             saveSettings(settings.copy(mediaIconColor = null, ringerIconColor = null,
-                                notificationIconColor = null, alarmIconColor = null))
+                                notificationIconColor = null, alarmIconColor = null, callIconColor = null))
                         }) { stream ->
                             iconColorStream = stream.ordinal
                             iconColorRequest++

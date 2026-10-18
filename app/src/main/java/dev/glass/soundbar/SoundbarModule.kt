@@ -114,9 +114,15 @@ class SoundbarModule : XposedModule() {
                     NativeMultiAppVolume.shouldHideRow(chain.thisObject!!, chain.getArg(0), chain.getArg(2) as Boolean)
                 }.onFailure { ModuleDebugLog.e("GlassSoundbar", "App-volume slider visibility failed; keeping native result", it) }
                     .getOrDefault(false)
-                if (hide) false else result
+                if (hide) false else if (result == true) result else {
+                    val keepAlarm = runCatching {
+                        NativePanelRows.shouldKeepAlarm(chain.thisObject!!, chain.getArg(0), chain.getArg(2) as Boolean)
+                    }.onFailure { ModuleDebugLog.e("GlassSoundbar", "Call alarm visibility check failed; keeping native result", it) }
+                        .getOrDefault(false)
+                    if (keepAlarm) true else result
+                }
             }
-            ModuleDebugLog.i("GlassSoundbar", "Automatic app-volume slider visibility hook installed")
+            ModuleDebugLog.i("GlassSoundbar", "App-volume visibility and call alarm retention hooks installed")
         }.onFailure { ModuleDebugLog.e("GlassSoundbar", "App-volume slider visibility hook unavailable; keeping stock rows", it) }
         runCatching {
             val adapter = Class.forName("com.oplus.systemui.volume.VolumeListAdapter", false, param.classLoader)
@@ -132,6 +138,24 @@ class SoundbarModule : XposedModule() {
             }
             ModuleDebugLog.i("GlassSoundbar", "Automatic app-volume slider side-list hook installed")
         }.onFailure { ModuleDebugLog.w("GlassSoundbar", "App-volume side-list hook unavailable", it) }
+        runCatching {
+            val adapter = Class.forName("com.oplus.systemui.volume.VolumeListAdapter", false, param.classLoader)
+            val select = adapter.getDeclaredMethod("switchToDataSourcePanel", Boolean::class.javaPrimitiveType)
+            check(adapter.getDeclaredField("panelShowList").type == java.util.ArrayList::class.java)
+            hook(select).intercept { chain ->
+                val owner = chain.thisObject!!
+                val selection = runCatching { NativePanelRows.prepare(owner) }
+                    .onFailure { ModuleDebugLog.e("GlassSoundbar", "Call panel row selection unavailable; keeping native list", it) }
+                    .getOrNull()
+                try {
+                    chain.proceed()
+                } finally {
+                    if (selection != null) runCatching { NativePanelRows.finish(owner, selection) }
+                        .onFailure { ModuleDebugLog.e("GlassSoundbar", "Call panel display cache restore failed", it) }
+                }
+            }
+            ModuleDebugLog.i("GlassSoundbar", "Call panel alarm retention hook installed")
+        }.onFailure { ModuleDebugLog.w("GlassSoundbar", "Call panel alarm retention unavailable", it) }
         // Optional color hooks must never prevent installation of the main panel hooks.
         runCatching {
             var iconType: Class<*>? = Class.forName("com.oplus.anim.EffectiveAnimationView", false, param.classLoader)

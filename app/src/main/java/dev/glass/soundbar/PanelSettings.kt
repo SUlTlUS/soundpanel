@@ -47,6 +47,7 @@ internal data class PanelSettings(
     val alarmIconColor: Int? = null,
     val notificationIconColor: Int? = null,
     val hideMultiAppVolume: Boolean = false,
+    val callIconColor: Int? = null,
 ) {
     fun toneFor(context: Context): Float =
         if (context.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES) {
@@ -94,6 +95,7 @@ internal data class PanelSettings(
                         c.getColumnIndex("alarm_icon_color").let { if (it >= 0 && !c.isNull(it)) c.getInt(it) else null },
                         c.getColumnIndex("notification_icon_color").let { if (it >= 0 && !c.isNull(it)) c.getInt(it) else null },
                         c.getColumnIndex("hide_multi_app_volume").let { it >= 0 && c.getInt(it) != 0 },
+                        c.getColumnIndex("call_icon_color").let { if (it >= 0 && !c.isNull(it)) c.getInt(it) else null },
                     ) else null
                 }
             }.onFailure { ModuleDebugLog.e("GlassSoundbar", "Panel settings provider unavailable; retaining saved settings", it) }.getOrNull()
@@ -132,6 +134,7 @@ internal data class PanelSettings(
             p["alarm_icon_color"] as? Int,
             p["notification_icon_color"] as? Int,
             p["hide_multi_app_volume"] as? Boolean ?: false,
+            p["call_icon_color"] as? Int,
         )
 
         fun local(context: Context): PanelSettings {
@@ -383,6 +386,7 @@ class SettingsProvider : ContentProvider() {
                 if (settings.borderHighlight) 1 else 0,
                 settings.lengthScale,
                 settings.mediaIconColor, settings.ringerIconColor, settings.notificationIconColor, settings.alarmIconColor,
+                settings.callIconColor,
                 if (settings.hideMultiAppVolume) 1 else 0,
             ))
         }

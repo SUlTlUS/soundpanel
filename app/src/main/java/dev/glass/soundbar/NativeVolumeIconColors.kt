@@ -15,7 +15,7 @@ internal object NativeVolumeIconColors {
         val icon = Reflect.call(row, "getIcon") as? View ?: return
         val stream = Reflect.call(row, "getStream") as Int
         val settings = configuration ?: PanelSettings.read(icon.context)
-        val color = if (settings.enabled) VolumeIconStream.entries.firstOrNull { it.stream == stream }?.color(settings) else null
+        val color = if (settings.enabled) VolumeIconStream.fromStream(stream)?.color(settings) else null
         if (color == null) paints.remove(icon)
         else paints[icon] = Paint().apply { colorFilter = PorterDuffColorFilter(color, PorterDuff.Mode.SRC_IN) }
         icon.invalidate()

@@ -72,7 +72,6 @@ internal object NativePanelLayout {
 
     fun apply(native: Any, settings: PanelSettings) {
         val root = Reflect.field(native, "mDialogView") as ViewGroup
-        val recycler = Reflect.field(native, "mVolumeRecyclerview") as View
         if (!settings.enabled) {
             restore(native)
             return
@@ -80,10 +79,9 @@ internal object NativePanelLayout {
         val tone = settings.toneFor(root.context)
         NativePanelPosition.apply(native, settings)
         captureCollapsedCapsule(native, root, tone)
-        NativeActions.hide(native)
         val original = root.layoutParams
         if (original !is FrameLayout.LayoutParams) return
-        originals.putIfAbsent(root, FrameLayout.LayoutParams(original))
+        if (collapsedCapsules[root] == null) return
         // Do not move the dialog yet. Some OnePlus SystemUI builds differ in
         // private fields/material wiring; if a later probe fails, changing the
         // gravity first would strand the stock panel at (top, right). Apply the
@@ -95,13 +93,11 @@ internal object NativePanelLayout {
         activeLeftSide = NativePanelMotion.isLeftSide(root)
         hiddenLabels[root] = settings.hideLabels
         ModuleDebugLog.d("GlassSoundbar", "Panel settings read: tone=$tone uiMode=${root.resources.configuration.uiMode} lightTone=${settings.tone} darkTone=${settings.darkTone} radiusScale=${settings.radiusScale} profile=${DeviceProfile.current}")
-        activeRoot = root
-        activeNative = native
-        NativePanelMotion.prepareExpand(root)
-        biases.putIfAbsent(recycler, Reflect.field(recycler.layoutParams, "verticalBias") as Float)
-        Reflect.set(recycler.layoutParams, "verticalBias", 0f)
-        recycler.requestLayout()
         alignCorners(native, root, beforeSelection = true)
+        if (activeRoot === root) {
+            NativeActions.hide(native)
+            NativePanelMotion.prepareExpand(root)
+        }
     }
 
     fun restore(native: Any) {
@@ -175,6 +171,23 @@ internal object NativePanelLayout {
         return Reflect.call(drawable, "getViewBlurProxy")
     }
 
+    private data class MeasuredRow(val row: Any, val view: View, val slider: View, val widths: PanelContentGeometry.RowWidths)
+
+    private fun measuredRow(rows: List<*>, attached: Boolean = false): MeasuredRow? =
+        rows.filterNotNull().firstNotNullOfOrNull { row ->
+            val view = Reflect.call(row, "getView") as? View ?: return@firstNotNullOfOrNull null
+            val slider = Reflect.call(row, "getSlider") as? View ?: return@firstNotNullOfOrNull null
+            if (attached && (!slider.isAttachedToWindow || !slider.isLaidOut || !slider.isShown ||
+                    slider.width <= 0 || slider.height <= 0)) {
+                return@firstNotNullOfOrNull null
+            }
+            val rowLayout = view.layoutParams ?: return@firstNotNullOfOrNull null
+            val sliderLayout = slider.layoutParams ?: return@firstNotNullOfOrNull null
+            val widths = PanelContentGeometry.rowWidths(rowLayout.width, view.measuredWidth,
+                sliderLayout.width, slider.measuredWidth) ?: return@firstNotNullOfOrNull null
+            MeasuredRow(row, view, slider, widths)
+        }
+
     private fun alignCorners(native: Any, root: ViewGroup, beforeSelection: Boolean = false) {
         val recycler = Reflect.field(native, "mVolumeRecyclerview") as ViewGroup
         val adapter = Reflect.field(native, "volumeListAdapter")!!
@@ -186,22 +199,24 @@ internal object NativePanelLayout {
                     (Reflect.field(it, "isMultiMediaVolume") == true || Reflect.call(it, "getStream") == 3) &&
                         (Reflect.call(it, "getView") as? View)?.visibility == View.VISIBLE
                 }
-            }.take(4)
+            }.let { rows ->
+                if (Reflect.field(adapter, "isSystemPanel") == true && NativePanelRows.keepsAll(rows)) rows else rows.take(4)
+            }
         } else Reflect.call(adapter, "getPanelShowList") as List<*>
-        val first = rows.firstOrNull() ?: return
-        val row = Reflect.call(first, "getView") as View
-        val slider = Reflect.call(first, "getSlider") as View
-        rows.filterNotNull().forEach { NativeVolumeSurface.bindSlider(Reflect.call(it, "getSlider") as View) }
+        // A newly inserted call row may not have been bound/measured yet. Its
+        // zero dimensions must not prevent using the existing media row's ROM geometry.
+        val reference = measuredRow(rows) ?: return
+        val first = reference.row
+        val row = reference.view
+        rows.filterNotNull().forEach { row ->
+            (Reflect.call(row, "getSlider") as? View)?.let(NativeVolumeSurface::bindSlider)
+        }
         // Match the ROM animator's settled spacing using this device's own
         // layout/resources. If SystemUI has not produced reliable dimensions
         // yet, leave the stock layout untouched instead of applying a guessed
         // 56dp/12dp geometry that can break on another OnePlus model.
-        val rowWidth = row.layoutParams.width.takeIf { it > 0 }
-            ?: row.measuredWidth.takeIf { it > 0 }
-            ?: return
-        val sliderWidth = slider.layoutParams.width.takeIf { it > 0 }
-            ?: slider.measuredWidth.takeIf { it > 0 }
-            ?: return
+        val rowWidth = reference.widths.row
+        val sliderWidth = reference.widths.slider
         val romPadding = dimenPx(root, "volume_dialog_recycleview_padding_left")
             ?: recycler.paddingLeft.toFloat().takeIf { it > 0f }
             ?: ((rowWidth - sliderWidth).coerceAtLeast(0) / 2f).takeIf { it > 0f }
@@ -255,6 +270,13 @@ internal object NativePanelLayout {
             }
         }
 
+        // Publish the custom layout only after its geometry and on-screen anchor
+        // are valid. Native width/animation hooks otherwise keep the stock flow.
+        originals.putIfAbsent(root, FrameLayout.LayoutParams(currentLp))
+        biases.putIfAbsent(recycler, Reflect.field(recycler.layoutParams, "verticalBias") as Float)
+        Reflect.set(recycler.layoutParams, "verticalBias", 0f)
+        activeRoot = root
+        activeNative = native
         activePaddingPx = padding
         activeSliderWidthPx = sliderWidth.toFloat()
         activeRowCount = rows.size
@@ -322,23 +344,33 @@ internal object NativePanelLayout {
     }
 
     private fun captureCollapsedCapsule(native: Any, root: View, tone: Float) {
+        collapsedCapsules.remove(root)
+        collapsedRootBounds.remove(root)
         runCatching {
             val rootRect = Rect()
-            if (root.getGlobalVisibleRect(rootRect) && !rootRect.isEmpty) {
-                collapsedRootBounds[root] = Rect(rootRect)
-            }
+            if (!root.getGlobalVisibleRect(rootRect) || rootRect.isEmpty) return@runCatching
+            collapsedRootBounds[root] = Rect(rootRect)
             val interactor = Reflect.field(native, "volumeInteractor") ?: return@runCatching
-            val activeRow = Reflect.call(interactor, "getActiveRow") ?: return@runCatching
-            val slider = Reflect.call(activeRow, "getSlider") as? View ?: return@runCatching
-            NativeVolumeSurface.capture(slider, tone, material(native))
-            val rect = visualCapsuleOnScreen(slider) ?: return@runCatching
-            collapsedCapsules[root] = Rect(rect)
-            ModuleDebugLog.i(
-                "GlassSoundbar",
-                "Collapsed geometry: capsule=$rect centerY=${rect.exactCenterY()} root=${collapsedRootBounds[root]} ${deviceSummary(root)}"
-            )
-            logView("collapsed-root", root)
-            logView("collapsed-slider", slider)
+            val adapter = Reflect.field(native, "volumeListAdapter") ?: return@runCatching
+            val candidates = (listOfNotNull(Reflect.call(interactor, "getActiveRow")) +
+                (Reflect.call(adapter, "getSideShowList") as List<*>).filterNotNull()).distinct()
+            for (row in candidates) {
+                val slider = Reflect.call(row, "getSlider") as? View ?: continue
+                if (!slider.isAttachedToWindow || !slider.isLaidOut || !slider.isShown) continue
+                val visible = Rect()
+                if (!slider.getGlobalVisibleRect(visible) || visible.isEmpty) continue
+                val rect = visualCapsuleOnScreen(slider) ?: continue
+                if (!Rect.intersects(rect, visible) || !Rect.intersects(rect, rootRect)) continue
+                NativeVolumeSurface.capture(slider, tone, material(native))
+                collapsedCapsules[root] = Rect(rect)
+                ModuleDebugLog.i(
+                    "GlassSoundbar",
+                    "Collapsed geometry: capsule=$rect centerY=${rect.exactCenterY()} root=${collapsedRootBounds[root]} ${deviceSummary(root)}"
+                )
+                logView("collapsed-root", root)
+                logView("collapsed-slider", slider)
+                return@runCatching
+            }
         }.onFailure {
             ModuleDebugLog.w("GlassSoundbar", "Unable to capture collapsed capsule", it)
         }
@@ -367,8 +399,7 @@ internal object NativePanelLayout {
         val anchor = collapsedCapsules[root] ?: return false
         val adapter = Reflect.field(native, "volumeListAdapter") ?: return false
         val rows = (Reflect.call(adapter, "getPanelShowList") as? List<*>)?.filterNotNull() ?: return false
-        val first = rows.firstOrNull() ?: return false
-        val slider = Reflect.call(first, "getSlider") as? View ?: return false
+        val slider = measuredRow(rows, attached = true)?.slider ?: return false
         val capsule = visualCapsuleOnScreen(slider) ?: return false
         val recycler = Reflect.field(native, "mVolumeRecyclerview") as? View ?: return false
         val rootLocation = IntArray(2)
